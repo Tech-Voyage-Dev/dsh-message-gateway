@@ -87,6 +87,10 @@ export const FeishuIcon = (props: { size?: number }): React.ReactElement =>
 export const DingtalkIcon = (props: { size?: number }): React.ReactElement =>
   Icon({ d: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z', ...props })
 
+/** Buzz（Nostr 蜜蜂 + 触角）。 */
+export const BuzzIcon = (props: { size?: number }): React.ReactElement =>
+  Icon({ d: 'M12 4.5c-2 1.4-3.2 3.6-3.2 5.9 0 1.4.5 2.7 1.4 3.7l-.9 1.9h5.4l-.9-1.9c.9-1 1.4-2.3 1.4-3.7 0-2.3-1.2-4.5-3.2-5.9zM7.6 7.6L5.8 6.4M16.4 7.6l1.8-1.2M9.8 12h.01M14.2 12h.01M12 15.4l-.3 1.6h.6l-.3-1.6', ...props })
+
 /** 平台 id → 线性图标。 */
 export const PlatformIcon = (props: { platform: string; size?: number }): React.ReactElement => {
   const { platform, size } = props
@@ -103,6 +107,7 @@ export const PlatformIcon = (props: { platform: string; size?: number }): React.
     case 'feishu': return createElement(FeishuIcon, { size })
     case 'dingtalk': return createElement(DingtalkIcon, { size })
     case 'webhooks': return createElement(WebhookIcon, { size })
+    case 'buzz': return createElement(BuzzIcon, { size })
     default: return createElement(InboxIcon, { size })
   }
 }

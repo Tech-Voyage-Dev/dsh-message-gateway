@@ -31,16 +31,16 @@ export class GatewayApi {
     return this.post('/gateway/list', {})
   }
 
-  save(platform: string, credentials: Record<string, string>): Promise<Envelope<GatewayView>> {
-    return this.post('/gateway/save', { platform, ...credentials })
+  save(platform: string, credentials: Record<string, string>, locale?: string): Promise<Envelope<GatewayView>> {
+    return this.post('/gateway/save', { platform, ...credentials, locale })
   }
 
   delete(platform: string): Promise<Envelope<GatewayView>> {
     return this.post('/gateway/delete', { platform })
   }
 
-  test(platform: string, credentials?: Record<string, string>): Promise<Envelope<{ ok: boolean; detail: string }>> {
-    return this.post('/gateway/test', { platform, ...credentials })
+  test(platform: string, credentials?: Record<string, string>, locale?: string): Promise<Envelope<{ ok: boolean; detail: string }>> {
+    return this.post('/gateway/test', { platform, ...credentials, locale })
   }
 
   getWechatQr(): Promise<Envelope<{ qrcode: string; qrcodeUrl: string }>> {
@@ -53,5 +53,15 @@ export class GatewayApi {
     userId?: string
   }>> {
     return this.post('/gateway/wechat/qr-status', { qrcode })
+  }
+
+  /** 平台启用/停用开关（停用 = 停止常驻桥，凭据保留）。 */
+  enable(platform: string, enabled: boolean, locale?: string): Promise<Envelope<GatewayView>> {
+    return this.post('/gateway/enable', { platform, enabled, locale })
+  }
+
+  /** 生成一次性 Buzz 密钥对（nsec 只返回一次，不落盘）。 */
+  generateBuzzKey(): Promise<Envelope<{ nsec: string; npub: string }>> {
+    return this.post('/gateway/buzz/generate', {})
   }
 }

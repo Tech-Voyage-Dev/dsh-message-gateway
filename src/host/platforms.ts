@@ -5,6 +5,7 @@
 
 import { connect } from 'node:net'
 import AiBot from '@wecom/aibot-node-sdk'
+import { testBuzzConnection, type BuzzLocale } from './buzz-bridge.ts'
 import type { PlatformDef, TestResult } from '../core/types.ts'
 
 /** 全部平台定义（client 侧亦引用本表渲染表单）。 */
@@ -160,6 +161,19 @@ export const PLATFORMS: PlatformDef[] = [
     hintKey: 'platform.webhooks.hint',
     fields: [{ key: 'secret', labelKey: 'field.webhookSecret', placeholderKey: 'field.secret.ph', kind: 'secret' }],
   },
+  {
+    id: 'buzz',
+    nameKey: 'platform.buzz',
+    icon: '🐝',
+    testable: true,
+    hintKey: 'platform.buzz.hint',
+    fields: [
+      { key: 'nsec', labelKey: 'field.buzzNsec', placeholderKey: 'field.buzzNsec.ph', kind: 'secret' },
+      { key: 'relay', labelKey: 'field.buzzRelay', placeholderKey: 'field.buzzRelay.ph', kind: 'text' },
+      { key: 'channels', labelKey: 'field.buzzChannels', placeholderKey: 'field.buzzChannels.ph', kind: 'text' },
+      { key: 'apiToken', labelKey: 'field.buzzApiToken', placeholderKey: 'field.buzzApiToken.ph', kind: 'secret' },
+    ],
+  },
 ]
 
 export function platformDef(id: string): PlatformDef | undefined {
@@ -209,7 +223,7 @@ function tcpBanner(host: string, port: number, timeoutMs = 8000): Promise<string
 }
 
 /** 各平台连接测试；未实现测试的平台返回 ok（凭据已保存视为已配置）。 */
-export async function testPlatform(id: string, cred: Record<string, string>): Promise<TestResult> {
+export async function testPlatform(id: string, cred: Record<string, string>, locale: BuzzLocale = 'zh'): Promise<TestResult> {
   switch (id) {
     case 'telegram': {
       const { status, body } = await httpJson(`https://api.telegram.org/bot${cred.token ?? ''}/getMe`)
@@ -325,7 +339,7 @@ export async function testPlatform(id: string, cred: Record<string, string>): Pr
       if (!rawUrl.startsWith('http')) return { ok: false, detail: '请填写 App ID 与 App Secret' }
       const payload: Record<string, unknown> = {
         msg_type: 'text',
-        content: { text: '🔌 [DSH Message Gateway] 飞书连接测试成功！' },
+        content: { text: '🔌 [DSH Message Gateway] Feishu connection test OK!' },
       }
       if (cred.secret) {
         const { createHmac } = await import('node:crypto')
@@ -353,10 +367,10 @@ export async function testPlatform(id: string, cred: Record<string, string>): Pr
       const { status, body } = await httpJson(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title: 'DSH 连接测试', body: 'Bark 手机推送通道已连通', group: 'DSH' }),
+        body: JSON.stringify({ title: 'DSH Connection Test', body: 'Bark push channel connected', group: 'DSH' }),
       })
       const r = body as { code?: number; message?: string }
-      if (r.code === 200 || status === 200) return { ok: true, detail: 'Bark 推送测试成功' }
+      if (r.code === 200 || status === 200) return { ok: true, detail: 'Bark push test OK' }
       return { ok: false, detail: r.message ?? `HTTP ${status}` }
     }
     case 'serverchan': {
@@ -367,11 +381,23 @@ export async function testPlatform(id: string, cred: Record<string, string>): Pr
       const { status, body } = await httpJson(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title: 'DSH连接测试', desp: 'Server酱消息通道测试成功' }),
+        body: JSON.stringify({ title: 'DSH Connection Test', desp: 'ServerChan message channel test OK' }),
       })
       const r = body as { code?: number; message?: string }
-      if (r.code === 0) return { ok: true, detail: 'Server酱推送测试成功' }
+      if (r.code === 0) return { ok: true, detail: 'ServerChan push test OK' }
       return { ok: false, detail: r.message ?? `HTTP ${status}` }
+    }
+    case 'buzz': {
+      // NIP-42 认证握手测试（建连 → AUTH 挑战 → 签名应答 → OK true）；文案跟随 UI 语言。
+      return await testBuzzConnection(
+        {
+          nsec: cred.nsec ?? '',
+          relay: cred.relay,
+          channels: cred.channels,
+          apiToken: cred.apiToken,
+        },
+        locale,
+      )
     }
     default:
       return { ok: true, detail: 'configured' }

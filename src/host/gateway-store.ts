@@ -19,6 +19,8 @@ export interface GatewayStoreData {
   platforms: Record<string, Record<string, string>>
   /** 各平台最近一次测试状态。 */
   statuses: Record<string, StoredStatus>
+  /** 各平台启用开关（缺省视为启用；false = 已停用）。 */
+  enabled: Record<string, boolean>
 }
 
 const FILE = join(homedir(), '.dsh', 'gateway.json')
@@ -31,9 +33,10 @@ export async function loadStore(): Promise<GatewayStoreData> {
     return {
       platforms: parsed.platforms ?? {},
       statuses: parsed.statuses ?? {},
+      enabled: parsed.enabled ?? {},
     }
   } catch {
-    return { platforms: {}, statuses: {} }
+    return { platforms: {}, statuses: {}, enabled: {} }
   }
 }
 

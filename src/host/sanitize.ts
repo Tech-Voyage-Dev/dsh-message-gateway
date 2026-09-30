@@ -15,7 +15,9 @@ const PATTERNS: Array<{ name: string; re: RegExp }> = [
   // Bearer token（请求头形式）。
   { name: 'bearer', re: /\bBearer\s+[A-Za-z0-9._~+\/-]{20,}={0,2}/gi },
   // 赋值形式的密钥：key=value / "key": "value" / key: value。
-  { name: 'key-assign', re: /\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|app[_-]?secret)\b\s*[=:]\s*["']?[A-Za-z0-9._~+\/-]{12,}/gi },
+  { name: 'key-assign', re: /\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|app[_-]?secret|nsec)\b\s*[=:]\s*["']?[A-Za-z0-9._~+\/-]{12,}/gi },
+  // Nostr nsec 私钥（bech32：nsec1 + 58 个小写字母数字）。
+  { name: 'nsec-key', re: /\bnsec1[023456789acdefghjklmnpqrstuvwxyz]{48,60}\b/g },
   // Authorization 头。
   { name: 'authorization', re: /\bAuthorization\s*[:=]\s*["']?[A-Za-z0-9._~+\/-]{12,}/gi },
   // 长 base64 / 高熵字符串（>= 32 字符连续字母数字）。

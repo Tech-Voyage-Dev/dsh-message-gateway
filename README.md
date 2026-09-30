@@ -1,132 +1,143 @@
 # dsh-message-gateway
 
-[English](README.en.md) · [Español](README.es.md)
+[中文](README.zh.md) · [Español](README.es.md)
 
-![dsh-message-gateway 功能界面](assets/screenshot.png)
+![dsh-message-gateway UI Preview](assets/screenshot.png)
 
-DSH Web GUI 的消息平台网关插件：在侧边栏「工作区」行、紧贴搜索图标左侧提供「消息平台」入口，全屏管理多平台消息连接器——凭据保存、连接测试、状态监控，并内置企业微信智能机器人的常驻桥接：外部消息经专用 agent 会话驱动 DSH 助手，回复按 token 流式回发；同时提供全平台通用主动图文推送通道（支持发送 Markdown 文本与多模态原生图片）。
+A message-platform gateway plugin for the DSH Web GUI: a "Message platforms" entry in the sidebar's "Workspaces" row, immediately left of the search icon, opens a full-screen manager for multi-platform message connectors — credential save, connection tests, status monitoring — plus a built-in persistent bridge for the WeCom AI bot: external messages drive the DSH assistant through a dedicated agent session, and replies stream back token by token. Also provides a universal proactive messaging API supporting Markdown text and native image attachments.
 
-## 功能
+## Features
 
-- **侧边栏入口**：侧边栏「工作区」行、**紧贴搜索图标左侧**新增「📮 消息平台」图标按钮（与官方搜索 / 视图 / 添加图标排成一行），点击打开全屏管理页（ESC / 点击遮罩关闭）
-- **多平台连接器**：Telegram / Discord / QQ 机器人 / 企业微信 / 企业微信智能机器人 / 微信（外部 Wechaty 网关）/ 微信公众号 / WhatsApp / Email / 钉钉 / 飞书 / Bark / Server酱 / Webhooks
-  - **企业微信智能机器人**：填 `botId + secret` 保存即建立官方 SDK WebSocket 常驻连接；支持文本流式对话、素材上传与**主动图片/文件推送**
-  - **Telegram 机器人**：填 Bot Token 保存即启用长轮询，与机器人对话即可使用，支持 `sendPhoto` **主动图片推送**
-  - **Discord 机器人**：填 Bot Token 保存即接入网关，频道/私信直接对话，支持 `files` 附件**主动图片推送**
-  - **钉钉群机器人**：配置自定义机器人 Webhook 与可选加签密钥（Secret），支持 Markdown 消息推送与公网图片 URL 渲染
-  - **飞书群机器人**：配置自定义机器人 Webhook 与可选签名密钥（Secret），支持标准文本与卡片推送
-  - **Bark (iOS)**：填入 Device Key，实现手机秒级弹窗通知推送与富文本大图横幅（公网 URL）
-  - **Server酱 (Turbo版)**：填入 SendKey，支持将通知推送至微信 / 手机服务号，支持 Markdown 图片 URL
-  - **QQ 机器人**：填 appId + secret 保存即连接开放平台网关（频道/群/私信），被动回复 + 流式编辑
-  - **企业微信应用**：填 CorpID/AgentID/Secret + 回调 Token/EncodingAESKey，后台配置回调 URL（`/gateway/wecom/callback`）后发消息即自动对话
-  - **微信公众号**：填 AppID/Secret + 回调 Token，后台配置服务器 URL（`/gateway/wechat-mp/callback`）后发消息即自动对话
-  - **WhatsApp**：填 Token + Phone Number ID，Meta 后台配置 Webhook（`/gateway/whatsapp/webhook`）后发消息即自动对话
-  - **Email**：填 IMAP（收件，993/143）+ SMTP（回复，465/587/25），按邮件线程自动归类会话，回复用 Re: 原主题
-- **通用主动推送通道**：`POST /gateway/push`（供定时任务、自动化脚本、外部流水线等调用）：
-  - 请求参数：
-    - `platform`：目标平台（`wecom-aibot` / `telegram` / `discord` / `dingtalk` / `feishu` / `bark` / `serverchan` / `email`）
-    - `target`：目标会话（`wecom-aibot` 为单聊 userid 或群 ID；`telegram` 为 chatId 数字；`discord` 为 channelId；`bark` 为 deviceKey 等）
-    - `content`：可选文本内容（支持 Markdown）
-    - `title`：可选标题（Email 作为主题，其他平台作为前缀）
-    - `image`：可选图片数据（支持 **Base64** 编码数据，或公网可访问的 `http(s)://` 图片 URL）
-    - `filename`：可选图片文件名（默认 `image.png`）
-  - 特性：
-    - 文字与图片可同时发送，亦可单独发送纯文字或纯图片
-    - `wecom-aibot`、`telegram`、`discord` 支持本地二进制图片直接上传与原生下发
-    - `bark`、`dingtalk`、`serverchan` 自动适配公网图片 URL 模式
-- **凭据管理**：明文只落盘 `~/.dsh/gateway.json`（权限 600，原子写入），`/gateway/list` 永不回传凭据明文，只返回 configured 标记
-- **敏感信息脱敏**：写入日志 / 控制台的消息内容自动遮蔽疑似密钥（`sk-` 前缀、GitHub token、`Bearer`、`password=` 赋值、私钥 PEM 等通用模式），机器人对话里的机密不会泄露到日志文件
-- **连接测试**：每个平台独立的真实连接测试——Telegram/Discord 走 Bot API、QQ 走 access_token、企微走 gettoken、微信公众号走 cgi-bin/token、WhatsApp 走 Graph API、Email 走 IMAP TCP banner、企微智能机器人走官方 SDK 长连接（认证成功即通过）
-- **企业微信智能机器人常驻桥**：官方 SDK WebSocket 长连接，断线自动指数退避重连；收到文本消息 → 注入隔离的专用 agent 会话唤醒 DSH 驱动 → 回复按 chunk 流式回发，结束时经 response_url 定稿
-  - **多步骤流式聚合与防覆盖**：在多步骤/复杂工具调用任务中，自动按步骤段落累加保留历史思考与分析过程，绝不冲刷覆盖前文；中间步骤停顿时智能呈现三语动态处理提示（`⏳ 正在处理中，请稍候…`），定稿收官时自动无痕剥离
-  - **全平台优雅关机与秒速重连**：系统级监听退出信号并主动向远端服务发送断开握手，杜绝 30 秒连接排队超时锁，服务重启后 1~2 秒内秒速上线
-  - **群聊 @提及剥离**：去掉开头的 @机器人名后交给助手
-  - **斜杠命令**：`/help` / `/time` / `/status`（含中文别名：帮助/菜单/时间/状态）
-  - **进入会话欢迎语**：可选配置（配置项 `welcomeReply`，默认 `false` 保持免打扰，开启后用户当天首次进入单聊自动回复欢迎词）
-  - **主动发送通道**：`POST /gateway/send`（`{"chatid": "...", "content": "..."}`，单聊=userid，群聊=群 ID）以机器人身份主动发送 markdown 消息
-  - **消息路由规则**（插件配置 `routes`）：按「平台 + 关键词前缀」把消息路由到指定 **agent 预设**（独立会话）与可选**专用模型 / skill**。例如配置 `{ id: "code", matchPlatform: "telegram", matchPrefix: "code ", agentPreset: "code" }` 后，Telegram 里发 `code 帮我写个函数` 会进入 code 预设的独立会话。按顺序匹配第一条命中；未命中走默认 agent
-  - **斜杠命令**：`/help` / `/time` / `/status` / `/stats`（含中文别名：帮助/菜单/时间/状态/统计）；`/stats` 展示各平台桥连接状态与活跃会话数
-  - **Agent 主动推送工具**（`send_chat_message`）：自动向 DSH 注册通用推送工具，AI 助手在对话中可自主调用该工具将总结、任务结果或告警（含文字与图片截图）推送至企业微信、Telegram、Discord、钉钉等平台
-- **Webhook 接收端点**：`POST /gateway/webhook/in` 接收外部系统消息（`text` / `content` / `message` 任一字段），注入专用 agent 会话并同步返回完整回复；可配置 HMAC-SHA256 签名密钥校验（契约见 [docs/webhooks.md](docs/webhooks.md)）
-- **图片与文件附件接收（全平台）**：各平台按官方文档解析并下载用户发来的附件，交给 Agent 处理
-  - **图片** → 存入附件库并以**多模态**交给模型（可直接识别画面内容）
-  - **其它文件**（PDF / Excel / Word / 压缩包等任意类型）→ 以「文件名 + 字节数 + **只读路径**」句柄交给 Agent，Agent 用文件工具读取处理
-  - 已接入：企业微信智能机器人（`image` / `file` / `video` / `mixed` 图文混排）、飞书（`image` / `file` / `audio` / `media` / 富文本 `post`）、钉钉（`picture` / `richText` / `audio` / `video` / `file`）、Telegram（`photo` / `document` / `animation` / `video` / `voice` / `audio` / `video_note` / `sticker`，含 `caption` 说明文字）、Discord（`attachments[]`）、QQ 机器人（`attachments[]`，含引用消息递归与语音 `asr_refer_text`）、微信 ilink（`item_list` 图片 / 语音 / 文件 / 视频，含 CDN AES 解密）、Email（标准 MIME 附件，支持 RFC 2231 中文文件名与 base64 / quoted-printable 解码）
-  - **绝不静默丢弃**：任何未识别的消息类型都会收到一条用户可见的提示（如「收到该类型消息，暂不支持处理」），不会出现"发了消息却毫无响应"的情况
-  - 各平台存在**官方侧限制**，见下方「[各平台官方限制](#各平台官方限制非本插件缺陷)」
-- **微信个人号（可选外部网关）**：对接本机 Wechaty HTTP 网关的扫码登录与状态轮询（契约见 [docs/wechaty-gateway.md](docs/wechaty-gateway.md)）
-- **多语言**：中文 / English / Español，自动跟随 DSH Web 界面语言（西班牙语浏览器自动切换），默认简体中文
-- 明暗主题跟随 DSH Web GUI
+- **Sidebar entry**: a "📮 Message platforms" icon button in the sidebar's "Workspaces" row, **immediately left of the search icon** (in line with the official search / view / add buttons), opens the full-screen manager (close with ESC or by clicking the backdrop)
+- **Multi-platform connectors**: Telegram / Discord / QQ bot / WeCom / WeCom AI bot / WeChat (external Wechaty gateway) / WeChat Official Account / WhatsApp / Email / DingTalk / Feishu / Bark / ServerChan / Webhooks / Buzz (Nostr workspace)
+  - **Per-platform enable switch**: every configured platform gets an Enable / Disable toggle — disabling stops the persistent bridge, skips auto-start, and refuses callbacks and proactive pushes while keeping the credentials; one click restores it (`POST /gateway/enable`)
+  - **WeCom AI bot**: fill in `botId + secret` to establish an official SDK WebSocket connection; supports streaming replies, media upload, and **proactive image/file push**
+  - **Telegram bot**: save a Bot Token to enable long polling, supporting text streaming and `sendPhoto` **proactive image push**
+  - **Discord bot**: save a Bot Token to connect via Gateway, supporting channels/DMs and `files` attachment **proactive image push**
+  - **DingTalk Bot**: configure custom bot Webhook & optional HMAC Secret; supports Markdown text and public image URL rendering
+  - **Feishu / Lark Bot**: configure custom bot Webhook & optional Secret signature for text and card delivery
+  - **Bark (iOS)**: fill in Device Key for instant push notifications with rich image banners (public URL)
+  - **ServerChan**: fill in SendKey for push notifications to WeChat / mobile channels with Markdown image URLs
+  - **QQ bot**: save appId + secret to connect to the open-platform gateway; passive replies + streaming edits
+  - **WeCom app**: fill in CorpID/AgentID/Secret plus callback Token/EncodingAESKey for auto-dialogues
+  - **WeChat Official Account**: fill in AppID/Secret plus callback Token for follower dialogues
+  - **WhatsApp**: fill in Token + Phone Number ID for WhatsApp webhook dialogues
+  - **Email**: fill in IMAP (993/143) + SMTP (465/587/25) for threaded email conversations
+  - **Buzz (Nostr workspace)**: save an agent private key (`nsec1…` / 64-hex, one-click keypair generation) plus the relay URL to establish a NIP-42-authenticated WebSocket; members **@mention** the bot in a channel to chat (DMs and replies in the bot's own threads also answer), replies stream via a kind-9 placeholder + kind-40003 in-place edits; inbound attachments follow NIP-92 `imeta` with SHA-256 verification
+- **Universal proactive push channel**: `POST /gateway/push` (for cron jobs, automation scripts, and pipelines):
+  - Request body:
+    - `platform`: target platform (`wecom-aibot` / `telegram` / `discord` / `dingtalk` / `feishu` / `bark` / `serverchan` / `email` / `buzz`)
+    - `target`: destination target (single-chat userid or group id for `wecom-aibot`; numeric chatId for `telegram`; channelId for `discord`; deviceKey for `bark`; channel UUID for `buzz`, etc.)
+    - `content`: optional text content (supports Markdown)
+    - `title`: optional title (email subject or notification prefix)
+    - `image`: optional image data (**Base64** data or accessible `http(s)://` image URL)
+    - `filename`: optional image filename (defaults to `image.png`)
+  - Highlights:
+    - Text and image can be pushed together or separately
+    - `wecom-aibot`, `telegram`, and `discord` support uploading raw local binary buffers directly
+    - `bark`, `dingtalk`, and `serverchan` automatically adapt to public image URLs
+- **Credential management**: plaintext is persisted only to `~/.dsh/gateway.json` (mode 600, atomic write); `/gateway/list` never returns credential plaintext, only a `configured` flag
+- **Secret redaction**: message content written to logs / console is automatically masked for likely secrets (`sk-` prefixed keys, GitHub tokens, `Bearer`, `password=` assignments, PEM private keys, and other common patterns), so secrets in bot conversations never leak into log files
+- **Connection tests**: real per-platform checks — Telegram/Discord via Bot API, QQ via access_token, WeCom via gettoken, WeChat MP via cgi-bin/token, WhatsApp via Graph API, Email via IMAP TCP banner, WeCom AI bot via the official SDK long connection (authenticated = pass)
+- **WeCom AI bot persistent bridge**: official SDK WebSocket long connection with exponential backoff reconnect; incoming text messages are injected into an isolated dedicated agent session that wakes the DSH driver; replies stream back as chunks and finalize via `response_url`
+  - **Multi-step stream accumulation without overwrite**: in multi-step/complex agent tasks, earlier reasoning paragraphs are accumulated cleanly without being overwritten by later outputs; intermediate pauses display a dynamic status hint (`⏳ Processing, please wait…`) which is stripped upon completion
+  - **Graceful shutdown & instant reconnect**: catches process termination signals to perform proper handshake disconnects across all platforms, eliminating 30-second zombie connection timeouts and allowing re-connections in 1–2 seconds
+  - **Group-chat @mention stripping**: the leading `@bot-name` is removed before the assistant sees the message
+  - **Slash commands**: `/help` / `/time` / `/status` / `/stats` / `/workspace <path>` / `/commands` / `/files` / `/model` / `/effort` (Chinese aliases: 帮助/菜单/时间/状态/统计 / `工作区 <目录>` / `文件 <前缀>`)
+  - **Web UI features in chat**: the web composer's capabilities are exposed directly in chat —
+    - **Commands**: `/commands` lists every command, and any `/<name> …` runs the **same command registry as the web `/` palette** (`/plan`, `/goal`, …) via `ctx.commands.execute`; the command output becomes the prompt, errors are replied back to the chat
+    - **@file references**: `@path/to/file` works exactly like web @ mentions (the model reads the file relative to the chat workspace); sending just `@`, `@prefix`, or `/files <prefix>` replies with matching files & folders from the **same discovery source as the web picker** (`fileReferences`)
+    - **Model & Effort**: `/model [provider model effort]` switches this chat's model & reasoning effort — validated against the live LLM catalog and applied from the next message with the same semantics as the web picker; `/model` alone lists options (and picking a model without an effort shows its available efforts), `/effort` lists the current model's efforts, `/effort <id>` adjusts effort, `/model reset` / `/effort reset` restore defaults
+  - **Workspace switching** (config `allowWorkspace`, defaults to `false`): the chat command `/workspace <folder>` registers an existing folder as a DSH workspace — it appears in the sidebar's "Workspaces" row, exactly as the GUI's "add workspace" button does — and switches this chat's session working directory to that folder (the chat context resets and the new directory takes effect from the next message). The gateway session is also attached to the workspace, so it groups under it in the GUI.
+  - **Web UI session visibility**: every chat session the gateway creates shows up in the Web GUI's session list (sidebar workspace tree, grouped under its folder) with the **same auto-naming as web sessions** — a first-message fallback title, then an LLM title — so any bot conversation can be opened and inspected directly in the GUI.
+  - **Enter-chat welcome**: optional configuration (`welcomeReply`, defaults to `false` for zero disturbance; when set to `true`, auto-replies a greeting when a user enters single chat for the first time that day)
+  - **Proactive send channel**: `POST /gateway/send` (`{"chatid": "...", "content": "..."}`) sends markdown messages as the bot
+  - **Message routing rules** (plugin config `routes`): route messages by "platform + keyword prefix" to a specific **agent preset** (isolated session) with an optional **dedicated model / skill**
+  - **Agent push tool** (`send_chat_message`): automatically registers a universal message-pushing tool for DSH agents, allowing AI assistants to proactively send summaries, task results, or alerts (including screenshots and text) to WeCom, Telegram, Discord, DingTalk, etc.
+- **Webhook receive endpoint**: `POST /gateway/webhook/in` accepts messages from external systems, injects them into the dedicated agent session and returns the full reply synchronously; optional HMAC-SHA256 signature validation
+- **Image & file attachment receiving (all platforms)**: each platform parses and downloads attachments according to its official documentation and hands them to the Agent
+  - **Images** → stored in the attachment store and passed to the model as **multimodal content** (the model can actually see the picture)
+  - **Any other file** (PDF / Excel / Word / archives …) → handed to the Agent as a handle of "file name + byte size + **read-only path**", which the Agent reads with its file tools
+  - Covered: WeCom AI bot (`image` / `file` / `video` / `mixed`), Feishu (`image` / `file` / `audio` / `media` / rich-text `post`), DingTalk (`picture` / `richText` / `audio` / `video` / `file`), Telegram (`photo` / `document` / `animation` / `video` / `voice` / `audio` / `video_note` / `sticker`, including `caption`), Discord (`attachments[]`), QQ bot (`attachments[]`, with quoted-message recursion and voice `asr_refer_text`), WeChat iLink (`item_list` image / voice / file / video, with CDN AES decryption), Email (standard MIME attachments, RFC 2231 Chinese filenames, base64 / quoted-printable decoding)
+  - **Never silently dropped**: any unrecognised message type gets a user-visible notice (e.g. "received this message type, not supported yet") — you will never send something and get no response at all
+  - Each platform has its own **official limits** — see "[Platform limits](#platform-limits-official-not-our-bug)" below
+- **Multilingual**: the manager UI follows the DSH Web UI language (Chinese / English / Español); **bot replies** follow the `botLocale` config (defaults to English)
+- Light / dark theme follows the DSH Web GUI
 
-## 使用
+## Usage
 
-1. 打开 DSH Web（`dsh web`），点击侧边栏「消息平台」按钮
-2. 左侧选择平台，右侧填写凭据
-3. 点击「保存」：凭据落盘并立即自动触发一次连接测试，状态即时刷新
-4. 点击「测试连接」：用当前表单值只测不存
-5. 企微智能机器人保存 `botId + secret` 后立即建立常驻连接；删除配置即断开
+1. Open DSH Web (`dsh web`) and click the "Message platforms" button in the sidebar
+2. Pick a platform on the left, fill in credentials on the right
+3. Click **Save**: credentials are persisted and a connection test runs automatically, refreshing the status immediately
+4. Click **Test connection**: tests the current form values without saving
+5. Saving `botId + secret` for the WeCom AI bot establishes the persistent bridge right away; deleting the config disconnects it
+6. In any connected chat, send `/help` to see every in-chat command — web commands (`/commands`, `/<name>`), `@file` browsing, model & effort switching (`/model`, `/effort`), and workspace switching (`/workspace`)
 
-## 安装
+## Install
 
 ```sh
-# 从 npm 安装（通用插件，任何 DSH 用户可直接使用）
+# From npm (generic plugin, usable by any DSH user)
 dsh plugin --profile web add dsh-message-gateway
 ```
 
-重启 `dsh web`，侧边栏「工作区」那一行、**搜索图标左侧**即出现「📮 消息平台」图标按钮。打开页面，选择平台、
-填入凭据并「保存」——企业微信智能机器人填 `botId + secret` 后立即建立常驻连接，即可
-直接在企微里和机器人对话（与 Web 对话一致：每聊天独立会话 + 上下文自动压缩）。
+Restart `dsh web` — the "📮 Message platforms" icon button appears in the sidebar's "Workspaces" row, just left of the search icon. Open the page, pick a platform, fill in credentials and click **Save** — for the WeCom AI bot, saving `botId + secret` establishes the persistent bridge immediately and you can chat with the bot in WeCom right away (same as web: per-chat sessions + automatic context compression).
 
-## 配置
+## Config
 
-插件可通过 `dsh plugin config` 或 profile 配置文件调整（所有项均有默认值，开箱即用）：
+All options have defaults and the plugin works out of the box; tune them in the **Web GUI (Settings → Plugins → dsh-message-gateway)** or in the profile's `cordis.patch.yml` patch layer (e.g. `- id: ui-message-gateway` + `config: { allowWorkspace: true }`):
 
-| 配置 | 类型 | 默认 | 说明 |
+| Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `botLocale` | `zh` \| `en` | `zh` | 机器人回复文案语言 |
-| `maxChatAgents` | number | `40` | 每机器人最多保留的聊天会话数，超出自动淘汰最旧 |
-| `botModel` | `{provider, model}` | 无 | 可选：机器人专用模型（优先于部署默认模型；不填则与 Web 对话一致） |
-| `autoStartWecom` | boolean | `true` | 启动时自动用已保存的企业微信智能机器人凭据连接 |
-| `groupReply` | boolean | `true` | 是否回复群聊消息（false 时只处理单聊） |
+| `botLocale` | `zh` \| `en` | `en` | Bot reply language (defaults to English) |
+| `maxChatAgents` | number | `40` | Max chat sessions kept per bot; oldest is evicted beyond this |
+| `autoStartWecom` | boolean | `true` | Auto-connect the WeCom AI bot from saved credentials at startup |
+| `groupReply` | boolean | `true` | Reply to group messages (false = single chats only) |
+| `allowWorkspace` | boolean | `false` | Allow the `/workspace <path>` chat command to register folders as DSH workspaces and switch a chat's working directory |
+| `botModel` | `{provider, model}` | — | Optional dedicated bot model (falls back to the deployment default) |
+| `welcomeReply` | boolean | `false` | Auto-reply a greeting when a user enters single chat for the first time that day |
+| `routes` | array | `[]` | Message routing rules: platform + keyword prefix → agent preset / dedicated model / skill |
+| `outboundWebhooks` | array | `[]` | Outbound event webhook subscriptions (url, secret, events) |
 
-## 各平台官方限制（非本插件缺陷）
+## Platform limits (official — not our bug)
 
-下列限制**全部来自各平台官方接口的能力边界**（每条都可在官方文档中查证），不是本插件的 bug。
-遇到这些行为时，请对照本表判断——它们**无法通过改插件绕过**：
+Every limit below comes from the **official API capability boundary of the platform itself** (each one can be verified in that platform's documentation). They are not bugs in this plugin, and they **cannot be worked around by changing the plugin**:
 
-| 平台 | 官方限制 | 说明 |
+| Platform | Official limit | Notes |
 | --- | --- | --- |
-| 企业微信智能机器人 | **图片消息仅单聊可用** | 官方文档明确：`image` 类型仅支持单聊；**群聊里 @机器人 配图走 `mixed`（图文混排）**，本插件已同时接入两者 |
-| 企业微信智能机器人 | 媒体 URL **5 分钟内有效**、`aeskey` 每个链接唯一 | 官方要求收到事件后立即下载，URL 过期只能请用户重发 |
-| 企业微信智能机器人 | 文件 / 视频回调上限 **100MB** | 官方限制 |
-| 钉钉 | **群聊 @机器人 收不到 `audio` / `video` / `file`** | 官方文档明确：群聊仅支持 `text` / `picture` / `richText`；语音、视频、文件**只在单聊**（人与机器人会话）可用 |
-| 钉钉 | `downloadCode` 有时效 | 官方要求收到后尽快换取下载链接，过期报 `invalidParameter.robotCode.downloadCode` |
-| 飞书 | **表情包（`sticker`）不支持下载** | 官方文档明确不支持获取表情包资源；本插件会给出可见提示 |
-| 飞书 | 富文本 / 卡片内资源、合并转发子消息不支持下载 | 官方限制（传对应 ID 返回 `234043`） |
-| Telegram | **下载上限 20MB** | 官方文档明确：Bot 下载文件上限 20MB，超出需自建 **Local Bot API Server**；本插件会提示未下载 |
-| Discord | **必须开启 `MESSAGE_CONTENT` 特权意图** | 官方文档明确：未开启时 `content` / `embeds` / `attachments` 等字段**恒为空数组**，插件拿不到附件。需在 Discord 开发者后台申请并通过审核 |
-| Discord | 外链嵌入（embeds）不下载 | 用户粘贴的外链由本插件**刻意不抓取**（避免 SSRF 风险），只把标题与链接作为文本交给 Agent |
-| QQ 机器人 | 接收侧附件 `url` 的请求头要求与有效期**官方未说明** | 本插件按普通 HTTPS GET 实现（官方文档未要求特殊请求头，也未给出有效期） |
-| 微信 ilink | **无公开官方文档** | 该协议为腾讯内部/半开放接口；本插件字段名与解密流程取自**腾讯官方 npm 包源码**，可信但无文档承诺，平台可能无通知变更 |
-| 全平台 | **视频 / 语音不是"看画面 / 听声音"** | 模型无法直接理解音视频内容。本插件将其作为**文件**交给 Agent（提供文件名 + 只读路径），Agent 可用工具读取文件本体或转写后再处理 |
-| Email | `8bit` / `binary` 编码的附件按文本 literal 读取 | 本插件 IMAP 实现以文本字面量获取 part，对 `base64` / `quoted-printable`（实际绝大多数附件）解码精确；`8bit`/`binary` 属罕见情形 |
+| WeCom AI bot | **Image messages are private-chat only** | Official docs: `image` is single-chat only; in a **group, @-mentioning the bot with a picture arrives as `mixed`** (rich text + image). This plugin handles both |
+| WeCom AI bot | Media URLs are valid for **5 minutes**, `aeskey` is unique per link | Official docs require downloading immediately; an expired URL can only be re-sent by the user |
+| WeCom AI bot | File / video callback limit **100MB** | Official limit |
+| DingTalk | **Group @-mentions cannot receive `audio` / `video` / `file`** | Official docs: groups only support `text` / `picture` / `richText`; voice, video and files work **only in private chats** |
+| DingTalk | `downloadCode` expires | Official docs require exchanging it for a download URL promptly; otherwise `invalidParameter.robotCode.downloadCode` |
+| Feishu | **Stickers (`sticker`) cannot be downloaded** | Official docs state sticker resources are not available; this plugin replies with a visible notice |
+| Feishu | Rich-text / card resources and merged-forward sub-messages cannot be downloaded | Official limitation (returns `234043`) |
+| Telegram | **20MB download limit** | Official docs: bots can download files up to 20MB; beyond that requires a self-hosted **Local Bot API Server**. This plugin reports that it did not download |
+| Discord | **`MESSAGE_CONTENT` privileged intent is required** | Official docs: without it, `content` / `embeds` / `attachments` are **always empty arrays** and the plugin cannot see attachments. Apply and get approved in the Discord Developer Portal |
+| Discord | External embeds are not downloaded | By design this plugin **does not fetch** user-supplied external links (SSRF safety); it only passes the title and URL to the Agent as text |
+| QQ bot | Request headers and validity of the inbound attachment `url` are **undocumented** | This plugin performs a plain HTTPS GET (official docs specify no special header and no TTL) |
+| WeChat iLink | **No public official documentation** | This protocol is an internal / semi-open Tencent interface; field names and the decryption flow here are taken from the **official Tencent npm package source**. Trustworthy, but not a documented contract — the platform may change silently |
+| All platforms | **Video / voice are not "seen" or "heard"** | Models cannot natively understand audio or video. This plugin delivers them as **files** (name + read-only path) so the Agent can read or transcribe them with tools |
+| Email | `8bit` / `binary` encoded attachments are read as text literals | This plugin's IMAP implementation fetches parts as text literals; `base64` / `quoted-printable` (the vast majority of real attachments) decode exactly, `8bit`/`binary` is a rare edge case |
+| Buzz | Single-event content cap **64KB** (edits) | The relay caps kind-40003 edit content at 64KB; this plugin keeps each event ≤ 60KB and splits oversized replies into threaded follow-up messages — content is never lost |
+| Buzz | **2000-event** historical replay cap per subscription (newest-first) | A relay-side limit: when a channel accumulates more than 2000 messages during a long disconnect, the oldest are not replayed. This plugin subscribes with `since=now` (live-only) and does not pull history |
+| Buzz | **The platform is in pre-1.0 rapid iteration** | Event kinds and protocol details may change without notice; all kind constants are centralized at the top of `buzz-bridge.ts` for quick adaptation. The npub must be registered as a relay member (`buzz-admin add-member`) before any messages flow |
 
-> 如果你遇到的现象**不在上表中**，那可能是本插件的问题——欢迎[提 Issue](https://github.com/a792883583/dsh-message-gateway/issues)。
+> If what you are seeing is **not** in the table above, it is probably a plugin issue — please [open an Issue](https://github.com/Tech-Voyage-Dev/dsh-message-gateway/issues).
 
-## 文档
+## Docs
 
-- [架构与扩展指南](docs/architecture.md)（如何新增平台连接器）
-- [Webhook 接收端点契约](docs/webhooks.md)
-- [微信（Wechaty）HTTP 网关契约](docs/wechaty-gateway.md)
+- [Architecture & extension guide](docs/architecture.md) (how to add a platform connector)
+- [Webhook receive endpoint contract](docs/webhooks.md)
+- [WeChat (Wechaty) HTTP gateway contract](docs/wechaty-gateway.md)
 
-## 架构
+## Architecture
 
-- **host 半区**（`lib/index.js`）：`/gateway/*` 路由（list / save / delete / test / wechat-status）+ `BridgeManager`（agent 会话注入与事件流轮询）+ `WecomBridge`（SDK 长连接生命周期）+ `gateway-store`（凭据存储）
-- **client 半区**（`lib/client.js`）：侧边栏按钮挂载 + 全屏平台管理页（React，经 `__ModuleLoader__` 闭包加载）
+- **Host half** (`lib/index.js`): `/gateway/*` routes (list / save / delete / test / wechat-status) + `BridgeManager` (agent session injection and event-stream polling) + `WecomBridge` (SDK long-connection lifecycle) + `gateway-store` (credential persistence)
+- **Client half** (`lib/client.js`): sidebar button mount + full-screen platform manager (React, loaded via the `__ModuleLoader__` closure)
 
-## 反馈
+## Feedback
 
-使用中遇到问题或有功能建议？欢迎到 [GitHub Issues](https://github.com/a792883583/dsh-message-gateway/issues) 反馈，帮助我们把插件做得更好。
+Found a bug or have a feature request? Open an issue on [GitHub Issues](https://github.com/Tech-Voyage-Dev/dsh-message-gateway/issues) — your feedback helps us make the plugin better.
 
 ## License
 

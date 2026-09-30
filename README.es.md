@@ -1,6 +1,6 @@
 # dsh-message-gateway
 
-[中文](README.md) · [English](README.en.md)
+[中文](README.zh.md) · [English](README.md)
 
 ![Vista previa de dsh-message-gateway](assets/screenshot.png)
 
@@ -9,7 +9,8 @@ Un plugin de pasarela de mensajería para la GUI web de DSH: una entrada "Plataf
 ## Características
 
 - **Entrada en la barra lateral**: un botón de icono "📮 Plataformas de mensajería" en la fila "Espacios de trabajo", **justo a la izquierda del icono de búsqueda** (alineado con los botones oficiales de búsqueda / vista / añadir), abre el gestor a pantalla completa (cierre con ESC o haciendo clic en el fondo)
-- **Conectores multiplataforma**: Telegram / Discord / Bot de QQ / WeCom / Bot de IA de WeCom / WeChat (pasarela Wechaty externa) / Cuenta oficial de WeChat / WhatsApp / Email / DingTalk / Feishu / Bark / ServerChan / Webhooks
+- **Conectores multiplataforma**: Telegram / Discord / Bot de QQ / WeCom / Bot de IA de WeCom / WeChat (pasarela Wechaty externa) / Cuenta oficial de WeChat / WhatsApp / Email / DingTalk / Feishu / Bark / ServerChan / Webhooks / Buzz (espacio de trabajo Nostr)
+  - **Interruptor por plataforma**: cada plataforma configurada tiene un interruptor Activar / Desactivar — desactivarla detiene el puente persistente, omite el arranque automático y rechaza callbacks y envíos proactivos, conservando las credenciales; un clic la restaura (`POST /gateway/enable`)
   - **Bot de IA de WeCom**: rellene `botId + secret` para conexión WebSocket persistente; admite respuestas en streaming, subida de medios y **envío proactivo de imágenes/archivos**
   - **Bot de Telegram**: guarde un Bot Token para sondeo largo, admite streaming y `sendPhoto` para **envío proactivo de imágenes**
   - **Bot de Discord**: guarde un Bot Token para conectar vía Gateway, admite canales/DMs y adjuntos `files` para **envío proactivo de imágenes**
@@ -22,10 +23,11 @@ Un plugin de pasarela de mensajería para la GUI web de DSH: una entrada "Plataf
   - **Cuenta oficial de WeChat**: rellene AppID/Secret más Token de callback
   - **WhatsApp**: rellene Token + Phone Number ID para webhooks de WhatsApp
   - **Email**: rellene IMAP (993/143) + SMTP (465/587/25) para correos en hilos
+  - **Buzz (espacio de trabajo Nostr)**: guarde una clave privada de agente (`nsec1…` / 64-hex, generación de par de claves con un clic) más la URL del relay para establecer un WebSocket autenticado NIP-42; los miembros **@mencionan** al bot en un canal para chatear (los DM y las respuestas en los hilos del propio bot también responden); las respuestas se transmiten con un marcador kind-9 + ediciones in situ kind-40003; los adjuntos entrantes siguen NIP-92 `imeta` con verificación SHA-256
 - **Canal de push proactivo universal**: `POST /gateway/push` (para tareas programadas, scripts de automatización y pipelines):
   - Cuerpo de la petición:
-    - `platform`: plataforma destino (`wecom-aibot` / `telegram` / `discord` / `dingtalk` / `feishu` / `bark` / `serverchan` / `email`)
-    - `target`: destino (userid o grupo para `wecom-aibot`; chatId numérico para `telegram`; channelId para `discord`; deviceKey para `bark`, etc.)
+    - `platform`: plataforma destino (`wecom-aibot` / `telegram` / `discord` / `dingtalk` / `feishu` / `bark` / `serverchan` / `email` / `buzz`)
+    - `target`: destino (userid o grupo para `wecom-aibot`; chatId numérico para `telegram`; channelId para `discord`; deviceKey para `bark`; UUID de canal para `buzz`, etc.)
     - `content`: texto opcional (admite Markdown)
     - `title`: título opcional (asunto de correo o prefijo de notificación)
     - `image`: imagen opcional (datos en **Base64** o URL accesible `http(s)://`)
@@ -41,7 +43,13 @@ Un plugin de pasarela de mensajería para la GUI web de DSH: una entrada "Plataf
   - **Acumulación de flujo multietapa sin sobrescritura**: en tareas complejas de múltiples pasos, las conclusiones y pensamientos anteriores se conservan limpiamente sin ser reemplazados; las pausas muestran un indicador de estado dinámico (`⏳ Procesando, por favor espere…`) que se retira al finalizar
   - **Cierre ordenado y reconexión inmediata**: captura las señales de apagado del sistema para cerrar las conexiones formalmente, eliminando los bloqueos por espera de 30 segundos y reconectando en 1–2 segundos
   - **Eliminación de menciones @ en grupos**
-  - **Comandos de barra**: `/help` / `/time` / `/status` / `/stats`
+  - **Comandos de barra**: `/help` / `/time` / `/status` / `/stats` / `/workspace <ruta>` / `/commands` / `/files` / `/model` / `/effort`
+  - **Funciones web en el chat**: las capacidades del compositor web se exponen directamente en el chat —
+    - **Comandos**: `/commands` lista todos los comandos y cualquier `/<nombre> …` ejecuta el **mismo registro de comandos que la paleta / de la web** (`/plan`, `/goal`, …) vía `ctx.commands.execute`; la salida del comando se convierte en el prompt y los errores se responden en el chat
+    - **Referencias @archivo**: `@ruta/archivo` funciona igual que las menciones @ de la web (el modelo lee el archivo relativo al espacio de trabajo del chat); enviar solo `@`, `@prefijo` o `/files <prefijo>` responde con los archivos/carpetas coincidentes desde la **misma fuente de descubrimiento que el selector web** (`fileReferences`)
+    - **Modelo y Esfuerzo**: `/model [proveedor modelo esfuerzo]` cambia el modelo y el esfuerzo de razonamiento de este chat — validado contra el catálogo LLM en vivo y aplicado desde el siguiente mensaje con la misma semántica que el selector web; `/model` solo lista opciones (elegir un modelo sin esfuerzo muestra sus esfuerzos disponibles), `/effort` lista los esfuerzos del modelo actual, `/effort <id>` ajusta el esfuerzo, `/model reset` / `/effort reset` restauran los valores por defecto
+  - **Cambio de espacio de trabajo** (config `allowWorkspace`, por defecto `false`): el comando `/workspace <carpeta>` registra una carpeta existente como espacio de trabajo de DSH — aparece en la fila "Espacios de trabajo" de la barra lateral, igual que el botón "añadir espacio de trabajo" de la GUI — y cambia el directorio de trabajo de la sesión de este chat a esa carpeta (el contexto se reinicia y el nuevo directorio surte efecto desde el siguiente mensaje). La sesión del gateway también se adjunta al espacio de trabajo, por lo que se agrupa bajo él en la GUI.
+  - **Sesiones visibles en la web**: cada sesión de chat creada por el gateway aparece en la lista de sesiones de la GUI web (árbol de espacios de trabajo de la barra lateral, agrupada bajo su carpeta) con el **mismo nombrado automático que las sesiones web** — título de respaldo del primer mensaje y luego un título LLM — de modo que cualquier conversación del bot puede abrirse e inspeccionarse directamente en la GUI.
   - **Mensaje de bienvenida opcional**
   - **Canal de envío proactivo**: `POST /gateway/send`
   - **Reglas de enrutado de mensajes** (`routes`)
@@ -53,7 +61,7 @@ Un plugin de pasarela de mensajería para la GUI web de DSH: una entrada "Plataf
   - Cubierto: bot de WeCom (`image` / `file` / `video` / `mixed`), Feishu (`image` / `file` / `audio` / `media` / texto enriquecido `post`), DingTalk (`picture` / `richText` / `audio` / `video` / `file`), Telegram (`photo` / `document` / `animation` / `video` / `voice` / `audio` / `video_note` / `sticker`, con `caption`), Discord (`attachments[]`), bot de QQ (`attachments[]`, con recursión de mensajes citados y `asr_refer_text` de voz), WeChat iLink (`item_list` imagen / voz / archivo / vídeo, con descifrado AES del CDN), Email (adjuntos MIME estándar, nombres chinos RFC 2231, decodificación base64 / quoted-printable)
   - **Nunca se descarta en silencio**: cualquier tipo de mensaje no reconocido recibe un aviso visible (p. ej. «se recibió este tipo de mensaje, aún no compatible») — nunca enviarás algo sin recibir respuesta
   - Cada plataforma tiene sus propios **límites oficiales** — ver «[Límites oficiales de las plataformas](#límites-oficiales-de-las-plataformas-no-son-un-fallo-del-plugin)» abajo
-- **Multilingüe**: chino / inglés / español, siguiendo el idioma de la interfaz web de DSH
+- **Multilingüe**: la interfaz del gestor sigue el idioma de la web de DSH (chino / inglés / español); **las respuestas del bot** siguen la configuración `botLocale` (inglés por defecto)
 - Tema claro / oscuro siguiendo la GUI web de DSH
 
 ## Uso
@@ -63,6 +71,7 @@ Un plugin de pasarela de mensajería para la GUI web de DSH: una entrada "Plataf
 3. Haga clic en **Guardar**: las credenciales se persisten y se ejecuta automáticamente una prueba de conexión, actualizando el estado al instante
 4. Haga clic en **Probar conexión**: prueba los valores actuales del formulario sin guardarlos
 5. Guardar `botId + secret` del Bot de IA de WeCom establece el puente persistente de inmediato; eliminar la configuración lo desconecta
+6. En cualquier chat conectado, envíe `/help` para ver todos los comandos del chat — comandos web (`/commands`, `/<nombre>`), exploración de `@archivo`, cambio de modelo y esfuerzo (`/model`, `/effort`) y cambio de espacio de trabajo (`/workspace`)
 
 ## Instalación
 
@@ -75,14 +84,19 @@ Reinicie `dsh web`: el botón de icono "📮 Plataformas de mensajería" aparece
 
 ## Configuración
 
-Todas las opciones tienen valores por defecto y el plugin funciona de inmediato; ajústelas vía `dsh plugin config` o el archivo de configuración del perfil:
+Todas las opciones tienen valores por defecto y el plugin funciona de inmediato; ajústelas en la **GUI web (Ajustes → Plugins → dsh-message-gateway)** o en la capa de parches `cordis.patch.yml` del perfil (p. ej. `- id: ui-message-gateway` + `config: { allowWorkspace: true }`):
 
 | Opción | Tipo | Por defecto | Descripción |
 | --- | --- | --- | --- |
-| `botLocale` | `zh` \| `en` | `zh` | Idioma de las respuestas del bot |
+| `botLocale` | `zh` \| `en` | `en` | Idioma de las respuestas del bot (inglés por defecto) |
 | `maxChatAgents` | number | `40` | Máximo de sesiones de chat por bot; se elimina la más antigua al superarlo |
 | `autoStartWecom` | boolean | `true` | Conectar automáticamente el Bot de IA de WeCom con las credenciales guardadas al iniciar |
 | `groupReply` | boolean | `true` | Responder mensajes de grupo (false = solo chats individuales) |
+| `allowWorkspace` | boolean | `false` | Permitir el comando `/workspace <ruta>` para registrar carpetas como espacios de trabajo de DSH y cambiar el directorio de trabajo de un chat |
+| `botModel` | `{proveedor, modelo}` | — | Modelo dedicado opcional del bot (por defecto el de la implementación) |
+| `welcomeReply` | boolean | `false` | Saludar automáticamente al entrar un usuario en chat individual por primera vez en el día |
+| `routes` | array | `[]` | Reglas de enrutado: plataforma + prefijo → agent preset / modelo dedicado / skill |
+| `outboundWebhooks` | array | `[]` | Suscripciones de webhooks de eventos salientes (url, secret, events) |
 
 ## Límites oficiales de las plataformas (no son un fallo del plugin)
 
@@ -104,8 +118,11 @@ Todos los límites siguientes provienen de la **frontera de capacidad de la API 
 | WeChat iLink | **Sin documentación oficial pública** | Es una interfaz interna / semipública de Tencent; los nombres de campo y el descifrado provienen del **paquete npm oficial de Tencent**. Fiables, pero sin contrato documentado: la plataforma puede cambiar sin aviso |
 | Todas | **El vídeo / la voz no se "ven" ni se "oyen"** | Los modelos no entienden audio o vídeo de forma nativa. Este plugin los entrega como **archivos** (nombre + ruta de solo lectura) para que el Agente los lea o transcriba con herramientas |
 | Email | Los adjuntos con codificación `8bit` / `binary` se leen como literales de texto | La implementación IMAP obtiene las partes como literales de texto; `base64` / `quoted-printable` (la inmensa mayoría) se decodifican con exactitud, `8bit`/`binary` es un caso raro |
+| Buzz | Límite de contenido por evento **64KB** (ediciones) | El relay limita el contenido de las ediciones kind-40003 a 64KB; este plugin mantiene cada evento ≤ 60KB y divide las respuestas largas en mensajes de hilo adicionales — el contenido nunca se pierde |
+| Buzz | Reproducción histórica limitada a **2000 eventos** por suscripción (los más recientes primero) | Es un límite del relay: si un canal acumula más de 2000 mensajes durante una desconexión larga, los más antiguos no se reproducen. Este plugin se suscribe con `since=now` (solo en vivo) y no extrae historial |
+| Buzz | **La plataforma está en iteración rápida pre-1.0** | Los kinds de evento y los detalles del protocolo pueden cambiar sin aviso; todos los kinds están centralizados al inicio de `buzz-bridge.ts` para adaptarse rápido. El npub debe registrarse como miembro del relay (`buzz-admin add-member`) antes de que fluyan mensajes |
 
-> Si lo que ves **no** aparece en esta tabla, probablemente sea un fallo del plugin — abre un [Issue](https://github.com/a792883583/dsh-message-gateway/issues).
+> Si lo que ves **no** aparece en esta tabla, probablemente sea un fallo del plugin — abre un [Issue](https://github.com/Tech-Voyage-Dev/dsh-message-gateway/issues).
 
 ## Documentación
 
@@ -120,7 +137,7 @@ Todos los límites siguientes provienen de la **frontera de capacidad de la API 
 
 ## Comentarios
 
-¿Encontró un error o tiene una sugerencia? Abra un issue en [GitHub Issues](https://github.com/a792883583/dsh-message-gateway/issues) — sus comentarios nos ayudan a mejorar el plugin.
+¿Encontró un error o tiene una sugerencia? Abra un issue en [GitHub Issues](https://github.com/Tech-Voyage-Dev/dsh-message-gateway/issues) — sus comentarios nos ayudan a mejorar el plugin.
 
 ## Licencia
 

@@ -33,7 +33,7 @@ export interface GatewayRoute {
 
 /** 插件运行时配置。 */
 export interface GatewayConfig {
-  /** 机器人回复语言（默认中文；企业微信等平台面向中文用户）。 */
+  /** 机器人回复文案语言（默认 English；需要中文时配置 zh）。 */
   botLocale: BotLocale
   /** 每个机器人最多保留的聊天会话数（超出自动淘汰最旧会话）。 */
   maxChatAgents: number
@@ -53,8 +53,12 @@ export interface GatewayConfig {
   autoStartFeishu: boolean
   /** 启动时自动用已保存的钉钉应用凭据建立常驻连接（Stream 长连接）。 */
   autoStartDingtalk: boolean
+  /** 启动时自动用已保存的 Buzz 凭据建立常驻连接（NIP-42 WebSocket）。 */
+  autoStartBuzz: boolean
   /** 是否回复群聊消息（false 时只处理单聊）。 */
   groupReply: boolean
+  /** 是否允许聊天指令 /workspace <目录> 注册工作区并切换当前聊天的工作目录（默认 false）。 */
+  allowWorkspace: boolean
   /** 是否在用户当天首次进入单聊时发送欢迎语（默认 false 保持清爽无打扰，设为 true 则自动发送）。 */
   welcomeReply: boolean
   /** 消息路由规则列表（按顺序匹配，第一条命中生效）。 */
@@ -69,7 +73,7 @@ export interface GatewayConfig {
 
 /** 插件配置 schema（cordis Loader 校验 + dsh 配置面板渲染）。 */
 export const Config = Schema.object({
-  botLocale: Schema.union(['zh', 'en', 'es']).default('zh').description('机器人回复语言（zh 中文 / en English / es Español）'),
+  botLocale: Schema.union(['zh', 'en', 'es']).default('en').description('机器人回复文案语言（默认 English；zh 中文 / es Español）'),
   maxChatAgents: Schema.natural().min(1).max(200).default(40).description('每个机器人最多保留的聊天会话数，超出自动淘汰最旧会话'),
   botModel: Schema.object({
     provider: Schema.string().required().description('模型供应商（如 pipio / opencode-go）'),
@@ -84,7 +88,9 @@ export const Config = Schema.object({
   autoStartEmail: Schema.boolean().default(true).description('启动时自动用已保存的 Email 凭据建立常驻连接（IMAP 轮询）'),
   autoStartFeishu: Schema.boolean().default(true).description('启动时自动用已保存的飞书应用凭据建立常驻连接（WebSocket 长连接）'),
   autoStartDingtalk: Schema.boolean().default(true).description('启动时自动用已保存的钉钉应用凭据建立常驻连接（Stream 长连接）'),
+  autoStartBuzz: Schema.boolean().default(true).description('启动时自动用已保存的 Buzz 凭据建立常驻连接（NIP-42 WebSocket）'),
   groupReply: Schema.boolean().default(true).description('是否回复群聊消息（false 时只处理单聊）'),
+  allowWorkspace: Schema.boolean().default(false).description('是否允许聊天指令 /workspace <目录>（或 工作区 <目录>）把目录注册为工作区并切换当前聊天的工作目录（默认 false 关闭）'),
   welcomeReply: Schema.boolean().default(false).description('是否在用户当天首次进入单聊时自动发送欢迎语（默认 false 保持免打扰，设为 true 开启）'),
   outboundWebhooks: Schema.array(Schema.object({
     url: Schema.string().required().description('目标 Webhook 接收 URL'),

@@ -21,6 +21,7 @@ import { DiscordBridge } from './host/discord-bridge.ts'
 import { QQBridge, QqWebhookBridge } from './host/qq-bridge.ts'
 import { EmailBridge, ImapClient, SmtpClient, headerField, parseAddress, cleanBody } from './host/email-bridge.ts'
 import { WecomBridge } from './host/wecom-bridge.ts'
+import { BuzzBridge, type BuzzCred } from './host/buzz-bridge.ts'
 import { WecomAppBridge, WechatMpBridge, WhatsappBridge, sha1Sorted, xmlField, xmlEncrypt } from './host/callback-bridges.ts'
 import { CALLBACK_PATHS } from './host/routes.ts'
 import { PLATFORMS, platformDef, testPlatform } from './host/platforms.ts'
@@ -39,54 +40,62 @@ export {
   sha1Sorted, xmlField, xmlEncrypt, CALLBACK_PATHS,
   PLATFORMS, platformDef, testPlatform,
   WecomSmartsheetClient,
+  BuzzBridge,
 }
-export type { GatewayConfig, CreateSmartsheetOptions, CreateSmartsheetResult, SmartsheetFieldDef }
+export type { GatewayConfig, CreateSmartsheetOptions, CreateSmartsheetResult, SmartsheetFieldDef, BuzzCred }
 
 /** 挂载网关路由并启动已配置平台的常驻桥。 */
 export function apply(ctx: Context, config: GatewayConfig = Config({} as GatewayConfig) as GatewayConfig): void {
   const manager = new BridgeManager(ctx, config)
   ctx.effect(() => {
-    // 已保存的各平台凭据 → 自动建立常驻连接（配置项可关）。
+    // 已保存的各平台凭据 → 自动建立常驻连接（配置项可关；用户级「停用」开关同样跳过）。
     void loadStore().then((store) => {
+      const enabled = (id: string): boolean => store.enabled[id] !== false
       const wecom = store.platforms['wecom-aibot']
-      if (config.autoStartWecom && wecom !== undefined && wecom.botId !== '' && wecom.secret !== '') {
+      if (config.autoStartWecom && enabled('wecom-aibot') && wecom !== undefined && wecom.botId !== '' && wecom.secret !== '') {
         manager.startWecom({ botId: wecom.botId, secret: wecom.secret })
         console.log('[dsh-message-gateway] wecom-aibot bridge auto-started')
       }
       const telegram = store.platforms.telegram
-      if (config.autoStartTelegram && telegram !== undefined && telegram.token !== '') {
+      if (config.autoStartTelegram && enabled('telegram') && telegram !== undefined && telegram.token !== '') {
         manager.startTelegram(telegram)
         console.log('[dsh-message-gateway] telegram bridge auto-started')
       }
       const discord = store.platforms.discord
-      if (config.autoStartDiscord && discord !== undefined && discord.token !== '') {
+      if (config.autoStartDiscord && enabled('discord') && discord !== undefined && discord.token !== '') {
         manager.startDiscord(discord)
         console.log('[dsh-message-gateway] discord bridge auto-started')
       }
       const qq = store.platforms.qq
-      if (config.autoStartQQ && qq !== undefined && qq.appId !== '' && qq.secret !== '') {
+      if (config.autoStartQQ && enabled('qq') && qq !== undefined && qq.appId !== '' && qq.secret !== '') {
         manager.startQQ(qq)
         console.log('[dsh-message-gateway] qq bridge auto-started')
       }
       const email = store.platforms.email
-      if (config.autoStartEmail && email !== undefined && email.imapHost !== '' && email.imapUser !== '') {
+      if (config.autoStartEmail && enabled('email') && email !== undefined && email.imapHost !== '' && email.imapUser !== '') {
         manager.startEmail(email)
         console.log('[dsh-message-gateway] email bridge auto-started')
       }
       const feishu = store.platforms.feishu
-      if (config.autoStartFeishu && feishu !== undefined && feishu.appId !== '' && feishu.appSecret !== '') {
+      if (config.autoStartFeishu && enabled('feishu') && feishu !== undefined && feishu.appId !== '' && feishu.appSecret !== '') {
         manager.startFeishu(feishu)
         console.log('[dsh-message-gateway] feishu bridge auto-started')
       }
       const dingtalk = store.platforms.dingtalk
-      if (config.autoStartDingtalk && dingtalk !== undefined && dingtalk.clientId !== '' && dingtalk.clientSecret !== '') {
+      if (config.autoStartDingtalk && enabled('dingtalk') && dingtalk !== undefined && dingtalk.clientId !== '' && dingtalk.clientSecret !== '') {
         manager.startDingTalk(dingtalk)
         console.log('[dsh-message-gateway] dingtalk bridge auto-started')
       }
       const wechat = store.platforms.wechat
-      if (wechat !== undefined && wechat.botToken !== '' && wechat.botToken !== undefined) {
+      if (enabled('wechat') && wechat !== undefined && wechat.botToken !== '' && wechat.botToken !== undefined) {
         manager.startWechat(wechat)
         console.log('[dsh-message-gateway] wechat bridge auto-started')
+      }
+      const buzz = store.platforms.buzz
+      if (config.autoStartBuzz && enabled('buzz') && buzz !== undefined && buzz.nsec !== '' && buzz.nsec !== undefined) {
+        // 自动启动时按插件 botLocale 决定 Buzz 状态文案语言（save/enable 路径则跟随页面语言）。
+        manager.startBuzz(buzz, config.botLocale ?? 'en')
+        console.log('[dsh-message-gateway] buzz bridge auto-started')
       }
     })
     const disposeRoutes = registerGatewayRoutes(ctx, manager)
@@ -95,17 +104,17 @@ export function apply(ctx: Context, config: GatewayConfig = Config({} as Gateway
     if (ctx.tools) {
       const disposeSend = ctx.tools.register(defineTool({
         name: 'send_chat_message',
-        description: '向已连接的消息平台（Telegram / Discord / 企业微信智能机器人 / 飞书 / 钉钉 / Email 等）主动推送文本消息。例如把代码总结、任务结果推送至指定的群聊或私信频道。',
+        description: '向已连接的消息平台（Telegram / Discord / 企业微信智能机器人 / 飞书 / 钉钉 / Email / Buzz 等）主动推送文本消息。例如把代码总结、任务结果推送至指定的群聊或私信频道。',
         parameters: {
           platform: {
             type: 'string',
             required: true,
-            description: '目标平台 id：telegram / discord / wecom-aibot / feishu / dingtalk / email',
+            description: '目标平台 id：telegram / discord / wecom-aibot / feishu / dingtalk / email / buzz',
           },
           target: {
             type: 'string',
             required: true,
-            description: '推送目标（telegram=chatId 数字；discord=channelId；wecom-aibot=userid/群ID；email=收件人地址）',
+            description: '推送目标（telegram=chatId 数字；discord=channelId；wecom-aibot=userid/群ID；email=收件人地址；buzz=频道 UUID）',
           },
           message: {
             type: 'string',

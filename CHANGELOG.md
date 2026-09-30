@@ -2,6 +2,27 @@
 
 本文件记录 `dsh-message-gateway` 的版本变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.1.36] - 2026-09-29
+
+### Added
+
+- **聊天指令 `/workspace` 工作区切换**：外部消息平台（Telegram / 企微 / Discord / Email / Buzz 等）可直接把已有文件夹添加为 DSH 工作区并让聊天在它里面干活：
+  - `/workspace <目录>`（或中文别名 `工作区 <目录>`）→ 经 `ctx.workspaceRegistry.create`（与 Web GUI「添加工作区」同一服务）把目录注册为工作区，侧边栏「工作区」行立即可见；`~` 与相对路径支持展开/解析，`realpath` 校验目录必须已存在且为文件夹
+  - 切换本聊天的工作目录：重置当前会话上下文，下一次会话以该目录为 `meta.cwd` 创建（文件工具沙箱随之切换到该目录）
+  - 新会话自动 `attachSession` 挂载到对应工作区，在 GUI 中随工作区分组显示；部署未提供 `dsh-workspace` 服务时优雅降级为仅切换 cwd
+  - **安全门控**：新增配置 `allowWorkspace`（默认 `false`），开启后才允许该指令——外部消息渠道的任何人都能触发注册与目录切换，默认关闭防止越权
+  - `/new` / `/clear` 重置现在同时覆盖该聊天下所有路由专用会话
+- **Web 输入框能力进聊天（指令 / @文件 / 模型与思考力度）**：
+  - **指令透传**：`/commands` 列出全部指令描述符；任意 `/<指令名> …` 经 `ctx.commands.execute` 执行——与 Web GUI 的 / 面板**共用同一指令注册表**（/plan、/goal 等），指令输出文本成为本轮用户提示词（与 Web 流程一致），错误文本回给聊天；未知指令原样交给模型
+  - **@文件引用与浏览**：`@路径` 与 Web @ 提及一致（模型相对聊天工作区读取）；整条消息只是一个 `@` 引用时，用与 Web 补全**同一数据源**（`ctx.fileReferences`）回复匹配的文件/文件夹列表；新增 `/files <前缀>`（别名 `文件 <前缀>`）显式浏览
+  - **模型与思考力度**：`/model [provider model effort]` 按实时 LLM 目录（`listProviders` / `listModels` / `resolveModelInfo`）校验并为本聊天切换模型与思考力度；实现为每聊天可变 `ModelSelectionRef`（`installModelSelection` 的 current 引用），下一条消息生效，与 Web 选择器同语义；单独 `/model` 列出可选模型；`/effort` 列出当前模型的思考力度（含默认标记），`/effort <id>` 只调思考力度；`/model reset` / `/effort reset` 恢复默认（botModel/部署默认）
+
+### Fixed
+
+- **机器人默认语言回退错误**：`botText` 对缺失 / 未知 `botLocale` 回退到**中文**，与配置默认（English）矛盾；现改为缺失时一律回退默认英文。`/help` 等指令与 Buzz 状态文案的默认语言全部与 `botLocale` 默认值 `en` 一致
+- **消息平台新建会话在 Web UI 不可见**：各平台聊天会话创建时错误携带 `meta.origin: 'subagent'`，而 Web GUI 的工作区会话树会隐藏所有 `origin === 'subagent'` 的会话（只作为父会话的子代理谱系渲染），导致 Buzz 等平台的新会话在 Web UI 上找不到。现按 Web GUI / dsh-headless 的写法只传 `meta.cwd`（路由预设时附带 `agentPreset`），新会话立即可在 Web UI 会话列表中看到并可点开；此前已带 subagent 标记的历史会话不受影响（随聊天重置/淘汰自然消失）
+- **会话没有标题（显示为工作区名）**：网关注入的用户消息 `source.kind` 此前是 `'plugin'`（form relay），而 DSH 的会话命名服务（`dsh-session-title`，首条消息确定性回退 + `first-prompt` LLM 命名）只对 `source.kind === 'user'` 的消息生成标题，导致 Web UI 会话列表只能回落到工作区名。现改为 `{ kind: 'user' }`（网关消息本就是人类消息），新会话与 Web UI 完全同款自动命名（首条消息即时回退标题 + LLM 标题）；已存在的会话在收到下一条消息后也会补上标题
+
 ## [0.1.35] - 2026-09-17
 
 ### Changed

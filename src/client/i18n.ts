@@ -75,6 +75,23 @@ const DICTS: Record<Lang, Dict> = {
     'platform.serverchan.hint': '通过 Server酱 推送消息至微信 / 手机服务号。前往 sct.ftqq.com 获取 SendKey 即可。',
     'field.serverchanKey': 'SendKey',
     'field.serverchanKey.ph': 'SCTxxxxxxxxxxxx',
+    'platform.buzz': 'Buzz (Nostr 工作区)',
+    'platform.buzz.hint': 'Block 出品的 Nostr 团队工作区。填入 Agent 私钥（nsec1 或 64 位 hex）与 Relay 地址即可常驻连接：成员在频道中 @提及 机器人即可对话（DM 与机器人自己线程中的回复也会响应）。需将 npub 交给 Relay 管理员注册为成员（buzz-admin add-member），否则收不到消息。',
+    'field.buzzNsec': 'Agent 私钥',
+    'field.buzzNsec.ph': 'nsec1… 或 64 位 hex 私钥（可点「生成密钥对」）',
+    'field.buzzRelay': 'Relay 地址',
+    'field.buzzRelay.ph': 'ws://localhost:3000',
+    'field.buzzChannels': '频道列表（可选）',
+    'field.buzzChannels.ph': '频道 UUID，逗号分隔；留空自动发现',
+    'field.buzzApiToken': 'API Token（可选）',
+    'field.buzzApiToken.ph': 'Relay 启用 Token 认证时填写',
+    'gateway.buzz.generate': '生成密钥对',
+    'gateway.buzz.generated': '已生成新的 Buzz 密钥对并填入下方私钥框。请把 npub 交给 Relay 管理员注册为成员（buzz-admin add-member），否则收不到消息。',
+    'gateway.enable': '启用',
+    'gateway.disable': '停用',
+    'gateway.enabled': '已启用',
+    'gateway.disabled': '已停用',
+    'gateway.status.disabled': '已停用',
     'platform.webhooks': 'Webhooks',
     'platform.webhooks.hint': 'Webhook 无需凭据即可启用；可设置签名密钥用于校验请求。接收端点：POST /gateway/webhook/in，请求体 {"text": "..."}（text / content / message 任一字段）。',
     'field.token': 'Bot Token',
@@ -174,6 +191,23 @@ const DICTS: Record<Lang, Dict> = {
     'field.dingtalkClientSecret.ph': 'Enter DingTalk Client Secret',
     'field.dingtalkRobotCode': 'RobotCode',
     'field.dingtalkRobotCode.ph': 'RobotCode from Developer Console',
+    'platform.buzz': 'Buzz (Nostr workspace)',
+    'platform.buzz.hint': 'Nostr team workspace by Block. Enter the agent private key (nsec1 or 64-hex) and the relay URL to connect: members @mention the bot in a channel to chat (DMs and replies in the bot own threads also answer). The npub must be registered as a relay member by the operator (buzz-admin add-member), otherwise no messages arrive.',
+    'field.buzzNsec': 'Agent private key',
+    'field.buzzNsec.ph': 'nsec1… or 64-hex key (use Generate keypair)',
+    'field.buzzRelay': 'Relay URL',
+    'field.buzzRelay.ph': 'ws://localhost:3000',
+    'field.buzzChannels': 'Channels (optional)',
+    'field.buzzChannels.ph': 'Comma-separated channel UUIDs; empty = auto-discover',
+    'field.buzzApiToken': 'API token (optional)',
+    'field.buzzApiToken.ph': 'Only when the relay enforces token auth',
+    'gateway.buzz.generate': 'Generate keypair',
+    'gateway.buzz.generated': 'Generated a new Buzz keypair and filled the field below. Give the npub to the relay operator to register as a member (buzz-admin add-member), otherwise no messages arrive.',
+    'gateway.enable': 'Enable',
+    'gateway.disable': 'Disable',
+    'gateway.enabled': 'Enabled',
+    'gateway.disabled': 'Disabled',
+    'gateway.status.disabled': 'Disabled',
   },
   es: {
     'gateway.title': 'Plataformas de mensajería',
@@ -249,6 +283,23 @@ const DICTS: Record<Lang, Dict> = {
     'field.dingtalkClientSecret.ph': 'Ingresa el Client Secret de DingTalk',
     'field.dingtalkRobotCode': 'RobotCode',
     'field.dingtalkRobotCode.ph': 'RobotCode de la consola de desarrolladores',
+    'platform.buzz': 'Buzz (espacio de trabajo Nostr)',
+    'platform.buzz.hint': 'Espacio de trabajo Nostr de Block. Introduce la clave privada del agente (nsec1 o 64-hex) y la URL del relay para conectar: los miembros @mencionan al bot en un canal para chatear (los DM y las respuestas en los hilos del propio bot también responden). El npub debe registrarse como miembro del relay por el operador (buzz-admin add-member); de lo contrario no llegan mensajes.',
+    'field.buzzNsec': 'Clave privada del agente',
+    'field.buzzNsec.ph': 'nsec1… o clave hex de 64 dígitos (usa Generar par de claves)',
+    'field.buzzRelay': 'URL del relay',
+    'field.buzzRelay.ph': 'ws://localhost:3000',
+    'field.buzzChannels': 'Canales (opcional)',
+    'field.buzzChannels.ph': 'UUIDs de canal separados por comas; vacío = descubrir automáticamente',
+    'field.buzzApiToken': 'API token (opcional)',
+    'field.buzzApiToken.ph': 'Solo cuando el relay exige autenticación por token',
+    'gateway.buzz.generate': 'Generar par de claves',
+    'gateway.buzz.generated': 'Se generó un nuevo par de claves de Buzz y se rellenó el campo inferior. Entrega el npub al operador del relay para registrarlo como miembro (buzz-admin add-member); de lo contrario no llegarán mensajes.',
+    'gateway.enable': 'Activar',
+    'gateway.disable': 'Desactivar',
+    'gateway.enabled': 'Activado',
+    'gateway.disabled': 'Desactivado',
+    'gateway.status.disabled': 'Desactivado',
   },
 }
 
@@ -304,6 +355,11 @@ const getSnapshot = (): number => revision
 /** 翻译；缺失的 key 回退到中文。 */
 export function t(key: string): string {
   return DICTS[lang][key] ?? DICTS.zh[key] ?? key
+}
+
+/** 当前 UI 语言（供请求携带，让 host 侧的测试结果/状态文案跟随 UI）。 */
+export function currentLang(): Lang {
+  return lang
 }
 
 /** React hook：语言切换时触发重渲染；返回的 t() 为模块级稳定引用。 */
