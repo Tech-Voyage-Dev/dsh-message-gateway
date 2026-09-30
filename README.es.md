@@ -2,7 +2,7 @@
 
 [中文](README.zh.md) · [English](README.md)
 
-> **Aviso de fork** — este es un fork de [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) mantenido por [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev), que añade el **puente Buzz (Nostr)** y soporte de proxy inteligente para plataformas internacionales. Instala este fork con `dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`.
+> **Aviso de fork** — este es un fork de [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) mantenido por [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev), que añade el **puente Buzz (Nostr)** y soporte de proxy inteligente para plataformas internacionales. Instala este fork con `dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`. Lee cómo está implementado el puente Buzz: [Bringing Buzz to DeepSeek Harness](https://techvoyage.dev/article/bringing-buzz-to-deepseek-harness).
 
 ![Vista previa de dsh-message-gateway](assets/screenshot.png)
 

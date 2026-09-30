@@ -2,7 +2,7 @@
 
 [English](README.md) · [Español](README.es.md)
 
-> **分支说明** — 本仓库是 [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) 的派生版本（由 [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev) 维护），新增 **Buzz（Nostr）桥接**与海外平台智能代理支持。安装派生版本：`dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`。
+> **分支说明** — 本仓库是 [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) 的派生版本（由 [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev) 维护），新增 **Buzz（Nostr）桥接**与海外平台智能代理支持。安装派生版本：`dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`。Buzz 桥接的实现细节见 [Bringing Buzz to DeepSeek Harness](https://techvoyage.dev/article/bringing-buzz-to-deepseek-harness)。
 
 ![dsh-message-gateway 功能界面](assets/screenshot.png)
 
