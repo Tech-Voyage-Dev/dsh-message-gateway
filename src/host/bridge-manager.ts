@@ -7,9 +7,12 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { installModelSelection, type Agent, type AgentHandle } from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type Agent, type AgentHandle, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { randomUUID } from 'node:crypto'
+import { resolve as pathResolve, join as pathJoin } from 'node:path'
+import { promises as fsPromises } from 'node:fs'
+import { homedir } from 'node:os'
 import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { TextMessage, WsFrame } from '@wecom/aibot-node-sdk'
@@ -25,6 +28,7 @@ import { EmailBridge, type EmailCred } from './email-bridge.ts'
 import { FeishuBridge } from './feishu-bridge.ts'
 import { DingTalkBridge } from './dingtalk-bridge.ts'
 import { WechatIlinkBridge, type WechatIlinkCred } from './wechat-ilink-bridge.ts'
+import { BuzzBridge, type BuzzLocale } from './buzz-bridge.ts'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { IncomingAttachment } from './incoming.ts'
 
@@ -41,6 +45,48 @@ interface DshAttachmentStoreLike {
   saveImage(input: { data: Uint8Array; mediaType: string; name?: string }): Promise<unknown>
   saveFile(input: { data: Uint8Array; name?: string }): Promise<unknown>
 }
+
+/**
+ * 工作区注册表服务（宿主 @deepseek-ai/dsh-workspace）的鸭子类型：
+ * 与 Web GUI 侧边栏「工作区」行共用同一个服务——create 注册目录（侧边栏可见），
+ * resolveByPath + attachSession 把网关会话挂到对应工作区下（GUI 分组可见）。
+ * 服务缺失时（部署未启用 dsh-workspace）优雅降级为仅切换会话 cwd。
+ */
+interface WorkspaceRegistryLike {
+  create(path: string, title?: string): Promise<unknown>
+  resolveByPath(path: string): Promise<{ attachSession(sessionId: string): Promise<void> } | undefined>
+}
+
+/**
+ * 指令注册表服务（宿主 @deepseek-ai/dsh-commands）的鸭子类型：
+ * 与 Web GUI 的 / 面板共用同一个注册表——list 提供描述符（供 /commands 列出），
+ * execute 直接执行任意指令（/plan、/goal…），返回 success 文本或 error。
+ */
+interface CommandsRuntimeLike {
+  list(agent: unknown): Array<{ name: string; description: string }>
+  execute(
+    agent: unknown,
+    line: string,
+    signal: AbortSignal,
+  ): Promise<{ result: { kind: 'success'; text?: string } | { kind: 'error'; text: string } } | undefined>
+}
+
+/** 文件引用发现服务（宿主 fileReferences，Web 的 @ 补全同一数据源）。 */
+interface FileReferencesLike {
+  list(agent: unknown, query: string, signal: AbortSignal): Promise<Array<{ path: string; kind: 'file' | 'directory' }>>
+}
+
+/** LLM 目录服务鸭子类型：列供应商/模型 + 校验思考力度。 */
+interface LlmServiceLike {
+  listProviders(): Array<{ id: string }>
+  listModels(provider: string): Promise<Array<{ id: string }>>
+  resolveModelInfo(provider: string, model: string): Promise<{
+    reasoning?: { efforts?: Array<{ id: string; name: string }>; defaultEffort?: string }
+  }>
+}
+
+/** agent 指令分派结果：reply=已回复收尾；run=指令成功，用 text 作为用户消息；none=未命中指令。 */
+type AgentCommandOutcome = { status: 'reply' } | { status: 'run'; text: string } | { status: 'none' }
 
 /** 附件存储支持（并会按字节校验）的图片 MIME 白名单。 */
 const IMAGE_MEDIA_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
@@ -114,6 +160,10 @@ export class BridgeManager {
   private awaiting: { resolve: (reply: string) => void } | null = null
   /** 各聊天的独立 agent 会话（key = 平台:chatKey；webhook 固定 'webhook'）。 */
   private agents = new Map<string, { agent: Agent; dispose: () => Promise<void> }>()
+  /** 各聊天的工作目录（/workspace 指令切换；缺省 = 宿主进程 cwd）。 */
+  private chatCwds = new Map<string, string>()
+  /** 各聊天的模型选择槽（/model、/effort 指令切换；picked 缺省时跟随 botModel/部署默认）。 */
+  private chatModels = new Map<string, { picked: ModelSelection | undefined }>()
   private disposed = false
 
   constructor(
@@ -124,9 +174,9 @@ export class BridgeManager {
     // 上下文收不到，而 session.events 是 append-only 快照，按 seq 推进即可。
   }
 
-  /** 当前语言的文案。 */
+  /** 当前语言的文案（语言缺失时回退默认 English）。 */
   private t(key: string): string {
-    return botText(this.config.botLocale, key)
+    return botText(this.config.botLocale ?? 'en', key)
   }
 
   /** 轮询注入会话的事件流：chunk → 流式推送；assistant/message → 定稿 + HTTP。 */
@@ -266,13 +316,11 @@ export class BridgeManager {
     this.onStatusCallback = fn
   }
 
-  /** 创建/获取某聊天的独立 agent：独立会话 + 模型配置（默认跟随部署，可被 botModel 覆盖）。 */
-  private async ensureAgentForKey(key: string, route?: { agentPreset?: string; botModel?: { provider: string; model: string }; skill?: string }): Promise<Agent | null> {
-    // 路由专用会话键：路由不同则会话隔离（避免「code 路由」与「默认路由」串上下文）。
-    const sessionKey = route?.agentPreset !== undefined || route?.skill !== undefined ? `${key}::${route?.agentPreset ?? ''}#${route?.skill ?? ''}` : key
-    const existing = this.agents.get(sessionKey)
-    if (existing !== undefined) return existing.agent
-    // 模型来源：路由专用模型 > 插件配置 botModel > 部署默认模型 > 根 agent。
+  /**
+   * 解析聊天缺省模型：路由 botModel > 插件配置 botModel > 部署默认模型 > 根 agent。
+   * 全部不可用时返回 undefined（调用方回退失败处理）。
+   */
+  private resolveDefaultModel(route?: { botModel?: { provider: string; model: string } }): ModelSelection | undefined {
     const override = route?.botModel ?? this.config.botModel
     let selection: { provider: string; model: string } | undefined
     if (override !== undefined && override.provider !== '' && override.model !== '') {
@@ -291,10 +339,38 @@ export class BridgeManager {
       provider = root?.options.provider ?? ''
       model = root?.options.model ?? ''
     }
-    if (provider === '' || model === '') {
+    if (provider === '' || model === '') return undefined
+    return { provider, model }
+  }
+
+  /** 创建/获取某聊天的独立 agent：独立会话 + 模型配置（默认跟随部署，可被 botModel / /model 覆盖）。 */
+  private async ensureAgentForKey(key: string, route?: { agentPreset?: string; botModel?: { provider: string; model: string }; skill?: string }): Promise<Agent | null> {
+    // 路由专用会话键：路由不同则会话隔离（避免「code 路由」与「默认路由」串上下文）。
+    const sessionKey = route?.agentPreset !== undefined || route?.skill !== undefined ? `${key}::${route?.agentPreset ?? ''}#${route?.skill ?? ''}` : key
+    const existing = this.agents.get(sessionKey)
+    if (existing !== undefined) return existing.agent
+    // 缺省模型：路由专用模型 > 插件配置 botModel > 部署默认模型 > 根 agent。
+    const defaultModel = this.resolveDefaultModel(route)
+    if (defaultModel === undefined) {
       console.warn('[dsh-message-gateway] no model selection available (botModel/agentDefaultModel/roots)')
       return null
     }
+    // 每聊天模型选择槽：/model、/effort 直接改 picked（可变引用被 prompt 组装按
+    // current 读取，与 Web GUI 的「Model & Effort」同语义——下一条消息生效）。
+    const chatModel = this.chatModels.get(key) ?? { picked: undefined as ModelSelection | undefined }
+    this.chatModels.set(key, chatModel)
+    const selection = {
+      get current(): ModelSelection | undefined {
+        return chatModel.picked ?? defaultModel
+      },
+      set current(next: ModelSelection | undefined) {
+        chatModel.picked = next
+      },
+      assembled: void 0 as ModelSelection | undefined,
+    }
+    const initial = chatModel.picked ?? defaultModel
+    const provider = initial.provider
+    const model = initial.model
     // 上限保护：超出后淘汰最早创建的会话（Map 按插入序迭代）。
     if (this.agents.size >= (this.config.maxChatAgents > 0 ? this.config.maxChatAgents : DEFAULT_MAX_CHAT_AGENTS)) {
       const oldestKey = this.agents.keys().next().value as string | undefined
@@ -306,13 +382,21 @@ export class BridgeManager {
       }
     }
     try {
-      // 仿 dsh-headless：随机会话 id + 当前工作目录（persona 段依赖 {{cwd}}），
-      // 由 agent 工厂的 sessions.prepare 创建会话。
+      // 仿 dsh-headless / Web GUI：随机会话 id + 工作目录（persona 段依赖 {{cwd}}），
+      // 由 agent 工厂的 sessions.prepare 创建会话。工作目录默认宿主进程 cwd，
+      // 可被 /workspace 指令按聊天切换（chatCwds）。
+      // 注意：meta 不能带 origin: 'subagent'——Web GUI 的工作区会话树会隐藏所有
+      // origin === 'subagent' 的会话（只作为父会话的子代理谱系展示），导致消息
+      // 平台新建的聊天会话在 Web UI 上不可见。
+      const cwd = this.chatCwds.get(key) ?? process.cwd()
       const sessionId = SessionId(`session-${randomUUID()}`)
       const handle: AgentHandle = await this.ctx.agents.create({
         sessionId,
         agentOptions: { provider, model },
-        meta: { cwd: process.cwd(), origin: 'subagent' },
+        meta: {
+          cwd,
+          ...(route?.agentPreset === undefined ? {} : { agentPreset: route.agentPreset }),
+        },
         setup: async (agentCtx) => {
           // 通用组合：挂载部署的默认 agent 预设（工具/提示词段/技能目录随预设而来），
           // 路由指定预设时优先挂载路由预设；无预设服务的部署自动退化为全局层。
@@ -345,10 +429,9 @@ export class BridgeManager {
               }
             }
           }
-          // 默认模型注入（与 dsh-headless 同源）。
-          if (selection !== undefined) {
-            installModelSelection(agentCtx, { current: selection, assembled: void 0 })
-          }
+          // 模型选择注入（与 Web GUI 的 Model & Effort 同源：可变引用，
+          // prompt 组装按 current 快照，切换后下一步生效）。
+          installModelSelection(agentCtx, selection)
         },
       })
       this.agents.set(sessionKey, { agent: handle.agent, dispose: () => handle.dispose() })
@@ -362,7 +445,25 @@ export class BridgeManager {
         console.warn('[dsh-message-gateway] set approval policy failed', e)
       }
 
-      console.log('[dsh-message-gateway] dedicated agent ready', { key: sessionKey, session: handle.agent.session.id, provider, model, preset: route?.agentPreset ?? '(default)', skill: route?.skill ?? undefined })
+      // 非默认目录的会话：若该目录已注册为工作区，把本会话挂到该工作区下
+      // （Web GUI 侧边栏「工作区」分组可见）。尽力而为，失败不影响对话。
+      if (cwd !== process.cwd()) {
+        const registry = (this.ctx as { get?: (name: string) => unknown }).get?.('workspaceRegistry') as
+          | WorkspaceRegistryLike
+          | undefined
+        if (registry !== undefined && typeof registry.resolveByPath === 'function') {
+          void (async () => {
+            try {
+              const workspace = await registry.resolveByPath(cwd)
+              if (workspace !== undefined) await workspace.attachSession(handle.agent.session.id)
+            } catch (error) {
+              console.warn('[dsh-message-gateway] attach workspace session skipped', String(error))
+            }
+          })()
+        }
+      }
+
+      console.log('[dsh-message-gateway] dedicated agent ready', { key: sessionKey, session: handle.agent.session.id, provider, model, cwd, preset: route?.agentPreset ?? '(default)', skill: route?.skill ?? undefined })
       return handle.agent
     } catch (error) {
       console.error('[dsh-message-gateway] create agent failed', error)
@@ -370,18 +471,25 @@ export class BridgeManager {
     }
   }
 
-  /** 主动释放某聊天的会话（对应 Web 的「新会话」；下一条消息自动新建）。 */
+  /**
+   * 主动释放某聊天的会话（对应 Web 的「新会话」；下一条消息自动新建）。
+   * 同时覆盖默认会话与该聊天下所有路由专用会话（`${key}::…` 前缀）。
+   */
   async resetChat(key: string): Promise<boolean> {
-    const entry = this.agents.get(key)
-    if (entry === undefined) return false
+    const matched = [...this.agents.keys()].filter((k) => k === key || k.startsWith(`${key}::`))
+    if (matched.length === 0) return false
     this.finishPending(key)
-    this.agents.delete(key)
-    try {
-      await entry.dispose()
-    } catch (error) {
-      console.error('[dsh-message-gateway] reset chat dispose failed', error)
+    for (const sessionKey of matched) {
+      const entry = this.agents.get(sessionKey)
+      if (entry === undefined) continue
+      this.agents.delete(sessionKey)
+      try {
+        await entry.dispose()
+      } catch (error) {
+        console.error('[dsh-message-gateway] reset chat dispose failed', error)
+      }
     }
-    console.log('[dsh-message-gateway] chat session reset', { key })
+    console.log('[dsh-message-gateway] chat session reset', { key, sessions: matched.length })
     return true
   }
 
@@ -407,6 +515,8 @@ export class BridgeManager {
     this.dingtalk = null
     this.wechat?.stop()
     this.wechat = null
+    this.buzz?.stop()
+    this.buzz = null
 
     // 2. 清除在途轮询与心跳定时器
     this.finishAllPending()
@@ -515,8 +625,12 @@ export class BridgeManager {
       // 命中则剥离前缀并把消息路由到指定 agent 预设（独立会话）。
       const route = this.matchRoute(id.key, text)
       const routedText = route !== null && route.prefix !== '' ? text.slice(route.prefix.length).trim() : text
+      // 需要 agent 的指令：@ 浏览 / /commands / /files / /model / /effort / Web 指令透传。
+      const command = await this.dispatchAgentCommand(id.key, route?.rule, routedText, reply)
+      if (command.status === 'reply') return
       // 文本 + 附件组装内容块（图片多模态；其它文件投影为句柄文本供 Agent 读取）。
-      const content = await this.buildContentBlocks(routedText, attachments)
+      // Web 指令成功执行时，用指令输出文本作为本轮用户消息（与 Web 一致）。
+      const content = await this.buildContentBlocks(command.status === 'run' ? command.text : routedText, attachments)
       if (content.length === 0) {
         console.warn('[dsh-message-gateway] no content to send', { key: id.key })
         return
@@ -531,7 +645,10 @@ export class BridgeManager {
         id: MessageId(`dsh-gateway-${Date.now().toString(36)}`),
         role: 'user',
         content,
-        source: { kind: 'plugin', plugin: 'dsh-message-gateway', form: 'relay' },
+        // source.kind 必须是 'user'：DSH 的会话命名服务（dsh-session-title）只对
+        // kind === 'user' 的消息生成会话标题（首条消息确定性回退 + LLM 命名），
+        // 之前用 'plugin' 导致 Web UI 里会话没有名字、回落到工作区名。
+        source: { kind: 'user' },
       }
       const session = agent.session
       const p: PendingReply = {
@@ -561,7 +678,7 @@ export class BridgeManager {
         p.heartbeat = setInterval(() => {
           if (this.pendingMap.get(id.key) !== p || p.pushed) return
           const elapsed = Math.round((Date.now() - p.startedAt) / 1000)
-          id.sink.stream(id.frame, p.streamId, `${this.t('ack')}（${elapsed}s）`, false)
+          id.sink.stream(id.frame, p.streamId, `${this.t('ack')} (${elapsed}s)`, false)
         }, ACK_HEARTBEAT_INTERVAL)
         p.heartbeat.unref?.()
       }
@@ -604,7 +721,8 @@ export class BridgeManager {
       id: MessageId(`dsh-gw-webhook-${Date.now().toString(36)}`),
       role: 'user',
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'dsh-message-gateway', form: 'relay' },
+      // 与聊天管线一致：kind 'user' 让会话命名服务正常生成标题。
+      source: { kind: 'user' },
     }
     return await new Promise<{ ok: boolean; reply: string }>((resolve) => {
       let settled = false
@@ -705,10 +823,10 @@ export class BridgeManager {
 
   /**
    * 主动推送：向任意平台的目标会话发送文本（供 cron 通知、其他插件调用）。
-   * 支持平台：wecom-aibot（企微智能机器人）/ telegram / discord / email。
+   * 支持平台：wecom-aibot（企微智能机器人）/ telegram / discord / email / buzz。
    * 不支持主动推送的平台（qq 等）返回明确错误。
    * @param platform 平台 id（见 PLATFORMS）。
-   * @param target 目标（telegram=chatId 数字串；discord=channelId；wecom-aibot=userid/群ID；email=收件地址）。
+   * @param target 目标（telegram=chatId 数字串；discord=channelId；wecom-aibot=userid/群ID；email=收件地址；buzz=频道 UUID）。
    * @param content 文本内容。
    * @param opts.title 可选标题（email 作为主题；其他平台拼在正文前）。
    */
@@ -716,6 +834,9 @@ export class BridgeManager {
     const text = opts.title !== undefined && opts.title !== ''
       ? `【${opts.title}】\n${content}`
       : content
+    const { loadStore } = await import('./gateway-store.ts')
+    const store = await loadStore()
+    if (store.enabled[platform] === false) return { ok: false, detail: `platform "${platform}" is disabled（已停用）` }
     switch (platform) {
       case 'wecom-aibot': {
         if (this.wecom === null) return { ok: false, detail: 'wecom-aibot bridge not connected' }
@@ -736,7 +857,7 @@ export class BridgeManager {
       }
       case 'email': {
         if (this.email === null) return { ok: false, detail: 'email bridge not connected' }
-        const subject = opts.title ?? 'DSH 通知'
+        const subject = opts.title ?? 'DSH Notification'
         const sent = await this.email.send(target, subject, content)
         return sent ? { ok: true, detail: 'sent' } : { ok: false, detail: 'email send failed' }
       }
@@ -760,7 +881,7 @@ export class BridgeManager {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             msgtype: 'markdown',
-            markdown: { title: opts.title ?? 'DSH 通知', text: text },
+            markdown: { title: opts.title ?? 'DSH Notification', text: text },
           }),
         })
         const r = (await resp.json().catch(() => ({}))) as { errcode?: number; errmsg?: string }
@@ -806,7 +927,7 @@ export class BridgeManager {
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title: opts.title ?? 'DSH 通知', body: content, group: 'DSH' }),
+          body: JSON.stringify({ title: opts.title ?? 'DSH Notification', body: content, group: 'DSH' }),
         })
         const r = (await resp.json().catch(() => ({}))) as { code?: number; message?: string }
         return (r.code === 200 || resp.status === 200) ? { ok: true, detail: 'sent' } : { ok: false, detail: r.message ?? 'bark send failed' }
@@ -821,10 +942,15 @@ export class BridgeManager {
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title: (opts.title ?? 'DSH 通知').slice(0, 32), desp: content }),
+          body: JSON.stringify({ title: (opts.title ?? 'DSH Notification').slice(0, 32), desp: content }),
         })
         const r = (await resp.json().catch(() => ({}))) as { code?: number; message?: string }
         return r.code === 0 ? { ok: true, detail: 'sent' } : { ok: false, detail: r.message ?? 'serverchan send failed' }
+      }
+      case 'buzz': {
+        if (this.buzz === null) return { ok: false, detail: 'buzz bridge not connected' }
+        const sent = await this.buzz.send(target, text)
+        return sent ? { ok: true, detail: 'sent' } : { ok: false, detail: 'buzz send failed' }
       }
       case 'qq':
         return { ok: false, detail: 'QQ 平台自 2025-04-21 起不支持主动推送（仅被动回复），无法发送主动消息' }
@@ -857,6 +983,9 @@ export class BridgeManager {
   ): Promise<{ ok: boolean; detail: string }> {
     const filename = opts.filename ?? 'image.png'
     const isUrl = typeof image === 'string' && /^https?:\/\//i.test(image.trim())
+    const { loadStore } = await import('./gateway-store.ts')
+    const store = await loadStore()
+    if (store.enabled[platform] === false) return { ok: false, detail: `platform "${platform}" is disabled（已停用）` }
 
     switch (platform) {
       case 'wecom-aibot': {
@@ -916,7 +1045,7 @@ export class BridgeManager {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            title: opts.caption ?? 'DSH 通知',
+            title: opts.caption ?? 'DSH Notification',
             body: opts.caption ? '' : '收到一张图片',
             image: image,
             group: 'DSH',
@@ -948,6 +1077,9 @@ export class BridgeManager {
 
       case 'feishu':
         return { ok: false, detail: 'Feishu custom robot webhook does not support binary image upload without tenant_access_token (im/v1/images)' }
+
+      case 'buzz':
+        return { ok: false, detail: 'Buzz 平台暂不支持图片推送（协议无公开图片发布路径）' }
 
       case 'qq':
         return { ok: false, detail: 'QQ platform has discontinued active push API since 2025-04-21' }
@@ -991,6 +1123,7 @@ export class BridgeManager {
   private feishu: FeishuBridge | null = null
   private dingtalk: DingTalkBridge | null = null
   private wechat: WechatIlinkBridge | null = null
+  private buzz: BuzzBridge | null = null
 
   /** 启动微信智能机器人桥（腾讯 iLink 官方协议长轮询）。 */
   startWechat(cred: Record<string, string>): void {
@@ -1166,6 +1299,33 @@ export class BridgeManager {
     this.email = null
   }
 
+  /** 启动 Buzz 桥（NIP-42 WebSocket；凭据变化时先停旧桥；locale 决定状态文案语言）。 */
+  startBuzz(cred: Record<string, string>, locale: BuzzLocale = 'en'): void {
+    this.buzz?.stop()
+    const bridge = new BuzzBridge(
+      {
+        nsec: cred.nsec ?? '',
+        relay: cred.relay,
+        channels: cred.channels,
+        apiToken: cred.apiToken,
+      },
+      {
+        onStatus: (status) => this.onStatusCallback?.(status),
+        onText: (text, identity, attachments) => void this.handleExternalMessage(identity, text, attachments),
+      },
+      locale,
+    )
+    this.buzz = bridge
+    bridge.start()
+  }
+
+  /** 停止 Buzz 桥（保留各频道会话上下文）。 */
+  stopBuzz(): void {
+    this.finishAllPending()
+    this.buzz?.stop()
+    this.buzz = null
+  }
+
   /** 任意桥接平台的状态（telegram/discord/qq/email/feishu/dingtalk）。 */
   bridgeStatus(id: string): BridgeStatus {
     if (id === 'telegram') return this.telegram?.status ?? { state: 'idle', detail: '', connectedAt: null }
@@ -1175,6 +1335,7 @@ export class BridgeManager {
     if (id === 'feishu') return this.feishu?.status ?? { state: 'idle', detail: '', connectedAt: null }
     if (id === 'dingtalk') return this.dingtalk?.status ?? { state: 'idle', detail: '', connectedAt: null }
     if (id === 'wechat') return this.wechat?.status ?? { state: 'idle', detail: '', connectedAt: null }
+    if (id === 'buzz') return this.buzz?.status ?? { state: 'idle', detail: '', connectedAt: null }
     return { state: 'idle', detail: '', connectedAt: null }
   }
 
@@ -1258,11 +1419,389 @@ export class BridgeManager {
         bridgeLine('Feishu', this.bridgeStatus('feishu')),
         bridgeLine('DingTalk', this.bridgeStatus('dingtalk')),
         bridgeLine('WeChat', this.bridgeStatus('wechat')),
+        bridgeLine('Buzz', this.bridgeStatus('buzz')),
       ]
       reply(lines.join('\n'))
       return true
     }
+    const wsPath = parseWorkspacePath(text)
+    if (wsPath !== null) {
+      await this.handleWorkspaceCommand(key, wsPath, reply)
+      return true
+    }
     return false
+  }
+
+  /**
+   * `/workspace <目录>`（或 `工作区 <目录>`）：把已有目录注册为 DSH 工作区
+   * （Web GUI 侧边栏「工作区」行立即可见，与官方「添加工作区」同服务），
+   * 并把本聊天后续会话的工作目录切换到该目录（重置当前上下文，下一条消息生效）。
+   * 需配置 allowWorkspace 开启（默认关闭，防外部消息渠道越权注册目录）。
+   */
+  private async handleWorkspaceCommand(key: string, rawPath: string, reply: (content: string) => void): Promise<void> {
+    if (this.config.allowWorkspace !== true) {
+      reply(this.t('wsDisabled'))
+      return
+    }
+    if (rawPath === '') {
+      reply(this.t('wsUsage'))
+      return
+    }
+    // ~ 展开 + 相对路径按宿主进程 cwd 解析，再 realpath 归一（要求目录已存在）。
+    const expanded = rawPath.startsWith('~') ? pathJoin(homedir(), rawPath.slice(1)) : rawPath
+    let real: string
+    try {
+      real = await fsPromises.realpath(pathResolve(process.cwd(), expanded))
+    } catch (error) {
+      reply(`${this.t('wsInvalid')}（${error instanceof Error ? error.message : String(error)}）`)
+      return
+    }
+    try {
+      if (!(await fsPromises.stat(real)).isDirectory()) throw new Error('not a directory')
+    } catch (error) {
+      reply(`${this.t('wsInvalid')}（${error instanceof Error ? error.message : String(error)}）`)
+      return
+    }
+    const registry = (this.ctx as { get?: (name: string) => unknown }).get?.('workspaceRegistry') as
+      | WorkspaceRegistryLike
+      | undefined
+    if (registry === undefined || typeof registry.create !== 'function') {
+      reply(this.t('wsFail'))
+      return
+    }
+    try {
+      await registry.create(real)
+    } catch (error) {
+      reply(`${this.t('wsFail')}: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    // 切换本聊天工作目录：释放现有会话上下文，后续会话以该目录为 cwd 创建。
+    await this.resetChat(key)
+    this.chatCwds.set(key, real)
+    console.log('[dsh-message-gateway] workspace switched', { key, cwd: real })
+    reply(this.t('wsOk').replace('{path}', real))
+  }
+
+  /**
+   * 需要 agent 的指令分派（内置命令已由 handleCommand 处理）：
+   * - 整条消息只是 `@查询` → 回文件/文件夹浏览列表（与 Web @ 补全同数据源）
+   * - `/commands` → 列出 Web 指令注册表（与 / 面板一致）
+   * - `/files <查询>`（或 `文件 <查询>`）→ 浏览工作区文件
+   * - `/model` / `/effort` → 本聊天模型与思考力度切换
+   * - 其它 `/指令名 …` → 透传执行 Web 指令（成功文本作为用户消息进入会话）
+   * 返回 reply=已回复；run=用返回文本作为用户消息；none=不是指令，原样进模型。
+   */
+  private async dispatchAgentCommand(
+    key: string,
+    route: NonNullable<GatewayConfig['routes']>[number] | undefined,
+    text: string,
+    reply: (content: string) => void,
+  ): Promise<AgentCommandOutcome> {
+    const trimmed = text.trim()
+
+    // @ 文件浏览：整条消息只是一个 @ 引用（含引号形式）时回列表；其余 @ 消息原样进模型。
+    const browse = /^@(?:"([^"]*)"|'([^']*)'|([^\s]*))$/.exec(trimmed)
+    if (browse !== null) {
+      await this.listFilesForKey(key, route, (browse[1] ?? browse[2] ?? browse[3] ?? '').trim(), reply)
+      return { status: 'reply' }
+    }
+
+    const m = /^\/([A-Za-z0-9_-]+)(?:\s+(.*))?$/.exec(trimmed)
+    if (m === null) return { status: 'none' }
+    const name = m[1] ?? ''
+    const arg = (m[2] ?? '').trim()
+
+    if (name === 'commands') {
+      await this.listCommandsForKey(key, route, reply)
+      return { status: 'reply' }
+    }
+    if (name === 'files' || /^文件(?:\s+(.*))?$/.test(trimmed)) {
+      const query = name === 'files' ? arg : (/^文件(?:\s+(.*))?$/.exec(trimmed)?.[1] ?? '').trim()
+      await this.listFilesForKey(key, route, query, reply)
+      return { status: 'reply' }
+    }
+    if (name === 'model') {
+      await this.handleModelCommand(key, route, arg, reply)
+      return { status: 'reply' }
+    }
+    if (name === 'effort') {
+      await this.handleEffortCommand(key, route, arg, reply)
+      return { status: 'reply' }
+    }
+    // 其余 /指令名 → 走 Web 指令注册表（与 / 面板共用）。
+    return this.runWebCommand(key, route, trimmed, reply)
+  }
+
+  /** `/commands`：列出当前聊天 agent 可见的 Web 指令描述符。 */
+  private async listCommandsForKey(
+    key: string,
+    route: NonNullable<GatewayConfig['routes']>[number] | undefined,
+    reply: (content: string) => void,
+  ): Promise<void> {
+    const agent = await this.ensureAgentForKey(key, route)
+    if (agent === null) {
+      reply(this.t('noAgent'))
+      return
+    }
+    const commands = (this.ctx as { get?: (name: string) => unknown }).get?.('commands') as CommandsRuntimeLike | undefined
+    if (commands === undefined || typeof commands.list !== 'function') {
+      reply(this.t('cmdUnavailable'))
+      return
+    }
+    const items = commands.list(agent)
+    if (items.length === 0) {
+      reply(this.t('cmdListEmpty'))
+      return
+    }
+    const lines = items.slice(0, 30).map((item) => `- \`/${item.name}\` → ${item.description}`)
+    reply(this.t('cmdListTitle') + lines.join('\n'))
+  }
+
+  /** `/files <查询>` 与 `@查询` 浏览：用 Web @ 补全同一数据源列出匹配文件/文件夹。 */
+  private async listFilesForKey(
+    key: string,
+    route: NonNullable<GatewayConfig['routes']>[number] | undefined,
+    query: string,
+    reply: (content: string) => void,
+  ): Promise<void> {
+    const agent = await this.ensureAgentForKey(key, route)
+    if (agent === null) {
+      reply(this.t('noAgent'))
+      return
+    }
+    const refs = (this.ctx as { get?: (name: string) => unknown }).get?.('fileReferences') as FileReferencesLike | undefined
+    if (refs === undefined || typeof refs.list !== 'function') {
+      reply(this.t('filesUnavailable'))
+      return
+    }
+    let candidates: Array<{ path: string; kind: 'file' | 'directory' }> = []
+    try {
+      candidates = await refs.list(agent, query, AbortSignal.timeout(15_000))
+    } catch (error) {
+      console.warn('[dsh-message-gateway] file browse failed', String(error))
+      candidates = []
+    }
+    if (candidates.length === 0) {
+      reply(this.t('filesEmpty'))
+      return
+    }
+    const lines = candidates.slice(0, 20).map((candidate) => (candidate.kind === 'directory' ? `- 📁 ${candidate.path}/` : `- 📄 ${candidate.path}`))
+    reply(this.t('filesTitle') + lines.join('\n'))
+  }
+
+  /** `/model [provider model effort]`：本聊天模型切换（校验供应商/模型/思考力度）。 */
+  private async handleModelCommand(
+    key: string,
+    route: NonNullable<GatewayConfig['routes']>[number] | undefined,
+    arg: string,
+    reply: (content: string) => void,
+  ): Promise<void> {
+    const llm = (this.ctx as { get?: (name: string) => unknown }).get?.('llm') as LlmServiceLike | undefined
+    if (llm === undefined) {
+      reply(this.t('modelUnavailable'))
+      return
+    }
+    if (arg === '') {
+      await this.replyModelList(llm, reply)
+      return
+    }
+    if (arg === 'reset' || arg === 'default') {
+      const slot = this.chatModels.get(key) ?? { picked: undefined as ModelSelection | undefined }
+      slot.picked = undefined
+      this.chatModels.set(key, slot)
+      reply(this.t('modelReset'))
+      return
+    }
+    const parts = arg.split(/\s+/)
+    const provider = parts[0] ?? ''
+    const model = parts[1] ?? ''
+    const effort = parts[2]
+    if (model === '') {
+      reply(this.t('modelUsage'))
+      return
+    }
+    const providers = llm.listProviders()
+    if (!providers.some((p) => p.id === provider)) {
+      reply(this.t('modelInvalidProvider').replace('{provider}', provider))
+      return
+    }
+    let models: Array<{ id: string }> = []
+    try {
+      models = await llm.listModels(provider)
+    } catch (error) {
+      console.warn('[dsh-message-gateway] listModels failed', String(error))
+    }
+    if (!models.some((mo) => mo.id === model)) {
+      reply(this.t('modelInvalidModel').replace('{provider}', provider).replace('{model}', model))
+      return
+    }
+    let efforts: string[] = []
+    if (effort !== undefined && effort !== '') {
+      try {
+        const info = await llm.resolveModelInfo(provider, model)
+        efforts = (info.reasoning?.efforts ?? []).map((e) => e.id)
+      } catch (error) {
+        console.warn('[dsh-message-gateway] resolveModelInfo failed', String(error))
+      }
+      if (!efforts.includes(effort)) {
+        reply(this.t('modelInvalidEffort')
+          .replace('{provider}', provider)
+          .replace('{model}', model)
+          .replace('{effort}', effort)
+          .replace('{efforts}', efforts.join(', ') || '-'))
+        return
+      }
+    }
+    const slot = this.chatModels.get(key) ?? { picked: undefined as ModelSelection | undefined }
+    slot.picked = {
+      provider,
+      model,
+      ...(effort !== undefined && effort !== '' ? { reasoningEffort: effort as unknown as ModelSelection['reasoningEffort'] } : {}),
+    }
+    this.chatModels.set(key, slot)
+    console.log('[dsh-message-gateway] chat model switched', { key, provider, model, effort })
+    let replyText = this.t('modelOk')
+      .replace('{provider}', provider)
+      .replace('{model}', model)
+      .replace('{effort}', effort !== undefined && effort !== '' ? ` · effort ${effort}` : '')
+    // 未指定思考力度时，附带该模型的可选力度列表（用户可随后 /effort 选择）。
+    if (effort === undefined || effort === '') {
+      const lines = await this.effortLinesFor(llm, provider, model)
+      if (lines.length > 0) replyText += `\n${lines.join('\n')}`
+    }
+    reply(replyText)
+  }
+
+  /** `/effort <id>`：本聊天思考力度切换（作用于当前选定的模型）。 */
+  private async handleEffortCommand(
+    key: string,
+    route: NonNullable<GatewayConfig['routes']>[number] | undefined,
+    arg: string,
+    reply: (content: string) => void,
+  ): Promise<void> {
+    const llm = (this.ctx as { get?: (name: string) => unknown }).get?.('llm') as LlmServiceLike | undefined
+    if (llm === undefined) {
+      reply(this.t('modelUnavailable'))
+      return
+    }
+    const slot = this.chatModels.get(key) ?? { picked: undefined as ModelSelection | undefined }
+    this.chatModels.set(key, slot)
+    if (arg === '') {
+      // 不带参数：列出当前模型的思考力度（含默认标记）。
+      const current = slot.picked ?? this.resolveDefaultModel(route)
+      if (current === undefined) {
+        reply(this.t('modelUnavailable'))
+        return
+      }
+      const lines = await this.effortLinesFor(llm, current.provider, current.model)
+      if (lines.length === 0) {
+        reply(this.t('effortListNone'))
+        return
+      }
+      reply(this.t('effortListTitle').replace('{provider}', current.provider).replace('{model}', current.model) + lines.join('\n'))
+      return
+    }
+    if (arg === 'reset') {
+      slot.picked = undefined
+      reply(this.t('effortReset'))
+      return
+    }
+    const current = slot.picked ?? this.resolveDefaultModel(route)
+    if (current === undefined) {
+      reply(this.t('modelUnavailable'))
+      return
+    }
+    let efforts: string[] = []
+    try {
+      const info = await llm.resolveModelInfo(current.provider, current.model)
+      efforts = (info.reasoning?.efforts ?? []).map((e) => e.id)
+    } catch (error) {
+      console.warn('[dsh-message-gateway] resolveModelInfo failed', String(error))
+    }
+    if (!efforts.includes(arg)) {
+      reply(this.t('effortInvalid').replace('{effort}', arg).replace('{efforts}', efforts.join(', ') || '-'))
+      return
+    }
+    slot.picked = { ...current, reasoningEffort: arg as unknown as ModelSelection['reasoningEffort'] }
+    console.log('[dsh-message-gateway] chat effort switched', { key, effort: arg })
+    reply(this.t('effortOk')
+      .replace('{effort}', arg)
+      .replace('{provider}', current.provider)
+      .replace('{model}', current.model))
+  }
+
+  /** 列出可用供应商与模型（紧凑格式，适合聊天窗口）。 */
+  private async replyModelList(llm: LlmServiceLike, reply: (content: string) => void): Promise<void> {
+    const providers = llm.listProviders()
+    if (providers.length === 0) {
+      reply(this.t('modelNone'))
+      return
+    }
+    const lines: string[] = []
+    for (const provider of providers.slice(0, 10)) {
+      let models: Array<{ id: string }> = []
+      try {
+        models = await llm.listModels(provider.id)
+      } catch (error) {
+        console.warn('[dsh-message-gateway] listModels failed', String(error))
+      }
+      const ids = models.slice(0, 6).map((mo) => mo.id).join(', ')
+      lines.push(`- \`${provider.id}\`: ${ids}${models.length > 6 ? ` (+${models.length - 6} more)` : ''}`)
+    }
+    reply(this.t('modelListTitle') + lines.join('\n'))
+  }
+
+  /** 取某模型可选思考力度的展示行（含默认标记）；模型未暴露力度时返回空数组。 */
+  private async effortLinesFor(llm: LlmServiceLike, provider: string, model: string): Promise<string[]> {
+    let info: Awaited<ReturnType<LlmServiceLike['resolveModelInfo']>>
+    try {
+      info = await llm.resolveModelInfo(provider, model)
+    } catch (error) {
+      console.warn('[dsh-message-gateway] resolveModelInfo failed', String(error))
+      return []
+    }
+    const efforts = info.reasoning?.efforts ?? []
+    if (efforts.length === 0) return []
+    const defaultEffort = info.reasoning?.defaultEffort
+    return efforts.map((e) => `- \`${e.id}\` → ${e.name}${e.id === defaultEffort ? this.t('effortDefaultSuffix') : ''}`)
+  }
+
+  /** 透传执行 Web 指令注册表里的 /指令名（与 Web / 面板共用同一注册表）。 */
+  private async runWebCommand(
+    key: string,
+    route: NonNullable<GatewayConfig['routes']>[number] | undefined,
+    line: string,
+    reply: (content: string) => void,
+  ): Promise<AgentCommandOutcome> {
+    const agent = await this.ensureAgentForKey(key, route)
+    if (agent === null) {
+      reply(this.t('noAgent'))
+      return { status: 'reply' }
+    }
+    const commands = (this.ctx as { get?: (name: string) => unknown }).get?.('commands') as CommandsRuntimeLike | undefined
+    if (commands === undefined || typeof commands.execute !== 'function') {
+      // 无指令服务：不拦截，原样交给模型（保持兼容）。
+      return { status: 'none' }
+    }
+    let outcome: Awaited<ReturnType<CommandsRuntimeLike['execute']>>
+    try {
+      outcome = await commands.execute(agent, line, AbortSignal.timeout(30_000))
+    } catch (error) {
+      reply(`⚠️ ${error instanceof Error ? error.message : String(error)}`)
+      return { status: 'reply' }
+    }
+    if (outcome === undefined) return { status: 'none' }
+    if (outcome.result.kind === 'error') {
+      reply(`⚠️ ${outcome.result.text}`)
+      return { status: 'reply' }
+    }
+    const text = outcome.result.text ?? ''
+    if (text.trim() === '') {
+      reply(this.t('cmdDone'))
+      return { status: 'reply' }
+    }
+    console.log('[dsh-message-gateway] web command executed', { key, line: sanitizeSecrets(line.slice(0, 40)) })
+    return { status: 'run', text }
   }
 }
 
@@ -1292,6 +1831,19 @@ function stripMention(content: string): string {
     if (space !== -1 && space <= 64) return text.slice(space + 1).trim()
   }
   return text
+}
+
+/**
+ * 解析工作区指令：`/workspace <目录>` 或 `工作区 <目录>`。
+ * 命中返回目录参数（无参数返回 ''）；未命中返回 null。
+ */
+function parseWorkspacePath(text: string): string | null {
+  const trimmed = text.trim()
+  const slash = /^\/workspace(?:\s+(.*))?$/.exec(trimmed)
+  if (slash !== null) return (slash[1] ?? '').trim()
+  const cn = /^工作区(?:\s*(.*))?$/.exec(trimmed)
+  if (cn !== null) return (cn[1] ?? '').trim()
+  return null
 }
 
 /** 当前上海时间（Asia/Shanghai）。 */

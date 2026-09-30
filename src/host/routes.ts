@@ -12,6 +12,7 @@ import type { GatewayView, PlatformStatus, TestResult } from '../core/types.ts'
 import { loadStore, saveStore } from './gateway-store.ts'
 import type { BridgeManager } from './bridge-manager.ts'
 import { platformDef, PLATFORMS, testPlatform } from './platforms.ts'
+import type { BuzzLocale } from './buzz-bridge.ts'
 import { WecomAppBridge, WechatMpBridge, WhatsappBridge, xmlEncrypt, callbackIdentity } from './callback-bridges.ts'
 import { QqWebhookBridge } from './qq-bridge.ts'
 
@@ -78,7 +79,7 @@ async function buildView(manager: BridgeManager): Promise<GatewayView> {
       : (def.id === 'webhooks' ? 'manual' : 'none')
     let detail = configured ? (stored?.detail ?? '') : ''
     let testedAt = configured ? (stored?.testedAt ?? null) : null
-    if (configured && (def.id === 'wecom-aibot' || def.id === 'telegram' || def.id === 'discord' || def.id === 'qq' || def.id === 'email' || def.id === 'feishu' || def.id === 'dingtalk' || def.id === 'wechat')) {
+    if (configured && (def.id === 'wecom-aibot' || def.id === 'telegram' || def.id === 'discord' || def.id === 'qq' || def.id === 'email' || def.id === 'feishu' || def.id === 'dingtalk' || def.id === 'wechat' || def.id === 'buzz')) {
       const merged = manager.mergeStatus(stored, def.id)
       state = merged.state
       detail = merged.detail
@@ -94,7 +95,12 @@ async function buildView(manager: BridgeManager): Promise<GatewayView> {
         state = 'none'
       }
     }
-    status[def.id] = { id: def.id, configured, state, detail, testedAt }
+    const enabled = store.enabled[def.id] !== false
+    if (configured && !enabled) {
+      state = 'disabled'
+      detail = ''
+    }
+    status[def.id] = { id: def.id, configured, state, detail, testedAt, enabled }
   }
   return { platforms: PLATFORMS, status }
 }
@@ -110,6 +116,10 @@ async function handleCallbackRoute(
   const store = await loadStore()
   try {
     if (path === '/gateway/wecom/callback') {
+      if (store.enabled.wecom === false) {
+        json(res, { ok: false, error: { code: 'internal', message: 'platform disabled（已停用）' } }, 400)
+        return
+      }
       const cred = store.platforms.wecom
       if (cred === undefined || cred.token === '' || cred.encodingAESKey === '') {
         json(res, { ok: false, error: { code: 'internal', message: 'wecom callback not configured' } }, 400)
@@ -157,6 +167,10 @@ async function handleCallbackRoute(
       return
     }
     if (path === '/gateway/wechat-mp/callback') {
+      if (store.enabled['wechat-mp'] === false) {
+        json(res, { ok: false, error: { code: 'internal', message: 'platform disabled（已停用）' } }, 400)
+        return
+      }
       const cred = store.platforms['wechat-mp']
       if (cred === undefined || cred.token === '') {
         json(res, { ok: false, error: { code: 'internal', message: 'wechat-mp callback not configured' } }, 400)
@@ -193,6 +207,10 @@ async function handleCallbackRoute(
       return
     }
     if (path === '/gateway/whatsapp/webhook') {
+      if (store.enabled.whatsapp === false) {
+        json(res, { ok: false, error: { code: 'internal', message: 'platform disabled（已停用）' } }, 400)
+        return
+      }
       const cred = store.platforms.whatsapp
       if (cred === undefined || cred.token === '' || cred.phoneId === '') {
         json(res, { ok: false, error: { code: 'internal', message: 'whatsapp not configured' } }, 400)
@@ -223,6 +241,10 @@ async function handleCallbackRoute(
       return
     }
     if (path === '/gateway/qq/callback') {
+      if (store.enabled.qq === false) {
+        json(res, { ok: false, error: { code: 'internal', message: 'platform disabled（已停用）' } }, 400)
+        return
+      }
       const cred = store.platforms.qq
       if (cred === undefined || cred.callbackToken === '') {
         json(res, { ok: false, error: { code: 'internal', message: 'qq callback not configured' } }, 400)
@@ -261,6 +283,57 @@ async function handleCallbackRoute(
     const message = error instanceof Error ? error.message : String(error)
     json(res, { ok: false, error: { code: 'internal', message } })
   }
+}
+
+/** 从请求负载提取 UI 语言（Buzz 测试结果/状态文案跟随 UI；非法回退 zh）。 */
+function readLocale(payload: unknown): BuzzLocale {
+  const value = (payload as { locale?: unknown } | null)?.locale
+  return value === 'en' || value === 'es' ? value : 'zh'
+}
+
+/** 凭据完整时启动对应常驻桥；不完整则停止（「保存即启动」语义）。 */
+function startBridgeFor(platform: string, credentials: Record<string, string>, manager: BridgeManager, locale: BuzzLocale = 'zh'): void {
+  if (platform === 'wecom-aibot') {
+    if (credentials.botId !== '' && credentials.secret !== '') manager.startWecom({ botId: credentials.botId, secret: credentials.secret })
+    else manager.stopWecom()
+  } else if (platform === 'telegram') {
+    if (credentials.token !== undefined && credentials.token !== '') manager.startTelegram(credentials)
+    else manager.stopTelegram()
+  } else if (platform === 'discord') {
+    if (credentials.token !== undefined && credentials.token !== '') manager.startDiscord(credentials)
+    else manager.stopDiscord()
+  } else if (platform === 'qq') {
+    if (credentials.appId !== undefined && credentials.appId !== '' && credentials.secret !== undefined && credentials.secret !== '') manager.startQQ(credentials)
+    else manager.stopQQ()
+  } else if (platform === 'email') {
+    if (credentials.imapHost !== undefined && credentials.imapHost !== '' && credentials.imapUser !== undefined && credentials.imapUser !== '') manager.startEmail(credentials)
+    else manager.stopEmail()
+  } else if (platform === 'feishu') {
+    if (credentials.appId !== undefined && credentials.appId !== '' && credentials.appSecret !== undefined && credentials.appSecret !== '') manager.startFeishu(credentials)
+    else manager.stopFeishu()
+  } else if (platform === 'dingtalk') {
+    if (credentials.clientId !== undefined && credentials.clientId !== '' && credentials.clientSecret !== undefined && credentials.clientSecret !== '') manager.startDingTalk(credentials)
+    else manager.stopDingTalk()
+  } else if (platform === 'wechat') {
+    if (credentials.botToken !== undefined && credentials.botToken !== '') manager.startWechat(credentials)
+    else manager.stopWechat()
+  } else if (platform === 'buzz') {
+    if (credentials.nsec !== undefined && credentials.nsec !== '') manager.startBuzz(credentials, locale)
+    else manager.stopBuzz()
+  }
+}
+
+/** 停止对应常驻桥（凭据保留）。 */
+function stopBridgeFor(platform: string, manager: BridgeManager): void {
+  if (platform === 'wecom-aibot') manager.stopWecom()
+  else if (platform === 'telegram') manager.stopTelegram()
+  else if (platform === 'discord') manager.stopDiscord()
+  else if (platform === 'qq') manager.stopQQ()
+  else if (platform === 'email') manager.stopEmail()
+  else if (platform === 'feishu') manager.stopFeishu()
+  else if (platform === 'dingtalk') manager.stopDingTalk()
+  else if (platform === 'wechat') manager.stopWechat()
+  else if (platform === 'buzz') manager.stopBuzz()
 }
 
 /** 校验并提取字段（只取平台定义中的字段，丢弃多余键）。 */
@@ -313,6 +386,10 @@ export function registerGatewayRoutes(ctx: Context, manager: BridgeManager): () 
         if (path === '/gateway/webhook/in') {
           // Webhook 接收端点：配置了签名密钥时校验 X-Gateway-Signature（HMAC-SHA256 hex）。
           const store = await loadStore()
+          if (store.enabled.webhooks === false) {
+            json(res, { ok: false, error: { code: 'internal', message: 'platform disabled（已停用）' } }, 400)
+            return
+          }
           const secret = store.platforms.webhooks?.secret ?? ''
           if (secret !== '') {
             const signature = req.headers['x-gateway-signature']
@@ -450,6 +527,29 @@ export function registerGatewayRoutes(ctx: Context, manager: BridgeManager): () 
           json(res, { ok: true, value: { sent: true } })
           return
         }
+        if (path === '/gateway/enable') {
+          // 平台启用/停用开关：停用 = 停止常驻桥 + 跳过自动启动，凭据保留。
+          const body = payload as { platform?: unknown; enabled?: unknown } | null
+          const platform = typeof body?.platform === 'string' ? body.platform.trim() : ''
+          if (platform === '' || platformDef(platform) === undefined) {
+            json(res, { ok: false, error: { code: 'internal', message: 'missing platform' } })
+            return
+          }
+          const enabled = body?.enabled === true
+          const store = await loadStore()
+          store.enabled[platform] = enabled
+          await saveStore(store)
+          if (enabled) startBridgeFor(platform, store.platforms[platform] ?? {}, manager, readLocale(body))
+          else stopBridgeFor(platform, manager)
+          json(res, { ok: true, value: await buildView(manager) })
+          return
+        }
+        if (path === '/gateway/buzz/generate') {
+          // 生成一次性 Buzz 密钥对（只返回不落盘；用户保存后才进入凭据存储）。
+          const { generateBuzzKeypair } = await import('./buzz-bridge.ts')
+          json(res, { ok: true, value: generateBuzzKeypair() })
+          return
+        }
         if (path === '/gateway/list') {
           json(res, { ok: true, value: await buildView(manager) })
           return
@@ -508,15 +608,9 @@ export function registerGatewayRoutes(ctx: Context, manager: BridgeManager): () 
           if (path === '/gateway/delete') {
             delete store.platforms[platform]
             delete store.statuses[platform]
+            delete store.enabled[platform]
             await saveStore(store)
-            if (platform === 'wecom-aibot') manager.stopWecom()
-            if (platform === 'telegram') manager.stopTelegram()
-            if (platform === 'discord') manager.stopDiscord()
-            if (platform === 'qq') manager.stopQQ()
-            if (platform === 'email') manager.stopEmail()
-            if (platform === 'feishu') manager.stopFeishu()
-            if (platform === 'dingtalk') manager.stopDingTalk()
-            if (platform === 'wechat') manager.stopWechat()
+            stopBridgeFor(platform, manager)
             json(res, { ok: true, value: await buildView(manager) })
             return
           }
@@ -531,57 +625,9 @@ export function registerGatewayRoutes(ctx: Context, manager: BridgeManager): () 
             // 保存后清除旧测试状态，等待重新测试。
             delete store.statuses[platform]
             await saveStore(store)
-            // 保存即启动常驻桥（凭据完整时）；清空凭据则停止。
-            if (platform === 'wecom-aibot') {
-              if (credentials.botId !== '' && credentials.secret !== '') {
-                manager.startWecom({ botId: credentials.botId, secret: credentials.secret })
-              } else {
-                manager.stopWecom()
-              }
-            }
-            if (platform === 'telegram') {
-              if (credentials.token !== undefined && credentials.token !== '') manager.startTelegram(credentials)
-              else manager.stopTelegram()
-            }
-            if (platform === 'discord') {
-              if (credentials.token !== undefined && credentials.token !== '') manager.startDiscord(credentials)
-              else manager.stopDiscord()
-            }
-            if (platform === 'qq') {
-              if (credentials.appId !== undefined && credentials.appId !== '' && credentials.secret !== undefined && credentials.secret !== '') {
-                manager.startQQ(credentials)
-              } else {
-                manager.stopQQ()
-              }
-            }
-            if (platform === 'email') {
-              if (credentials.imapHost !== undefined && credentials.imapHost !== '' && credentials.imapUser !== undefined && credentials.imapUser !== '') {
-                manager.startEmail(credentials)
-              } else {
-                manager.stopEmail()
-              }
-            }
-            if (platform === 'feishu') {
-              if (credentials.appId !== undefined && credentials.appId !== '' && credentials.appSecret !== undefined && credentials.appSecret !== '') {
-                manager.startFeishu(credentials)
-              } else {
-                manager.stopFeishu()
-              }
-            }
-            if (platform === 'dingtalk') {
-              if (credentials.clientId !== undefined && credentials.clientId !== '' && credentials.clientSecret !== undefined && credentials.clientSecret !== '') {
-                manager.startDingTalk(credentials)
-              } else {
-                manager.stopDingTalk()
-              }
-            }
-            if (platform === 'wechat') {
-              if (credentials.botToken !== undefined && credentials.botToken !== '') {
-                manager.startWechat(credentials)
-              } else {
-                manager.stopWechat()
-              }
-            }
+            // 保存即启动常驻桥（凭据完整时）；清空凭据则停止；平台已停用则保持停止。
+            if (store.enabled[platform] === false) stopBridgeFor(platform, manager)
+            else startBridgeFor(platform, credentials, manager, readLocale(payload))
             json(res, { ok: true, value: await buildView(manager) })
             return
           }
@@ -590,7 +636,7 @@ export function registerGatewayRoutes(ctx: Context, manager: BridgeManager): () 
           const hasSubmitted = Object.keys(submitted).length > 0
           const isConfigured = store.platforms[platform] !== undefined
           const credentials = hasSubmitted ? submitted : (store.platforms[platform] ?? {})
-          const result: TestResult = await testPlatform(platform, credentials)
+          const result: TestResult = await testPlatform(platform, credentials, readLocale(payload))
           // 仅当平台已保存配置，或者本次测试使用的就是已保存的凭据时，才将测试状态持久化到磁盘；
           // 如果用户只是在空白表单里点"测试连接"临时测一下，不应把全局状态变成"已连接"
           if (isConfigured && !hasSubmitted) {

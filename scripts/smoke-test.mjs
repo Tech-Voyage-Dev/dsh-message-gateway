@@ -6,6 +6,9 @@
 import { BridgeManager } from '../lib/index.js'
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
+import { mkdtempSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const nativeFetch = globalThis.fetch
 
@@ -41,6 +44,8 @@ function makeFakeAgent() {
           seq: session.seq++,
           data: { message: { content: [{ type: 'text', text: '你好，我是助手' }] } },
         })
+        // 模拟轮次收敛：管线依赖 turn/end 触发定稿推送。
+        events.push({ type: 'turn/end', seq: session.seq++, data: {} })
       }, 20)
     },
   }
@@ -93,7 +98,8 @@ check(
   `sids=${[...new Set(streams.map((s) => s.sid))].join(',')}`,
 )
 await new Promise((r) => setTimeout(r, 600))
-check('流式推送（chunk 累积）', streams.some((s) => s.content === '你好' && !s.finish))
+// 非定稿流式推送会附加「正在处理中」提示行，故按包含关系断言正文。
+check('流式推送（chunk 累积）', streams.some((s) => s.content.includes('你好') && !s.finish))
 check('定稿推送（finish，全量内容）', streams.some((s) => s.finish && s.content === '你好，我是助手'))
 check('ack+流式+定稿 均推送', streams.length >= 3, `streams=${streams.length}`)
 
@@ -102,6 +108,208 @@ console.log('\n[3] /new 新会话')
 streams.length = 0
 await manager.handleExternalMessage({ key: 'telegram:222', frame: {}, sink, chatType: 'single' }, '/new')
 check('/new 回复已清空', streams[0].content.includes('已开启新会话'))
+
+// ---------- 3.5 默认语言回退 + /workspace 工作区指令 ----------
+console.log('\n[3.5] 默认英文回退与 /workspace 指令')
+// 3.5.1 botLocale 缺失 → 默认英文（不允许回退中文）
+streams.length = 0
+const managerEnDefault = new BridgeManager(ctx, { maxChatAgents: 40, groupReply: true, autoStartWecom: true, autoStartTelegram: true, autoStartDiscord: true })
+await managerEnDefault.handleExternalMessage({ key: 'telegram:444', frame: {}, sink, chatType: 'single' }, '/help')
+check('botLocale 缺失时 /help 默认英文', streams[0]?.content.includes('Assistant commands'), JSON.stringify(streams[0]?.content?.slice(0, 60)))
+check('botLocale 缺失时不回退中文', !streams[0]?.content.includes('智能助手指令'))
+
+// 3.5.2 /workspace 指令（macOS 下 /var 是指向 /private/var 的软链，断言统一用 realpath 归一后的路径）
+const wsDir = mkdtempSync(join(tmpdir(), 'dsh-gw-ws-'))
+const wsRealDir = realpathSync(wsDir)
+const createdWs = []
+const attachedSessions = []
+const wsSessions = []
+const wsMessages = []
+const wsCtx = {
+  get: (name) => {
+    if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test-model' }) }
+    if (name === 'workspaceRegistry') return {
+      create: async (path) => { createdWs.push(path); return { path } },
+      resolveByPath: async (path) => (path === wsRealDir ? { attachSession: async (id) => { attachedSessions.push(id) } } : undefined),
+    }
+    return undefined
+  },
+  agents: {
+    roots: () => [{ options: { model: 'test' } }],
+    list: () => [],
+    create: async ({ sessionId, meta }) => {
+      const { agent } = makeFakeAgent()
+      agent.session.id = sessionId
+      const send = agent.send.bind(agent)
+      agent.send = (message) => { wsMessages.push(message); return send(message) }
+      wsSessions.push({ sessionId, meta })
+      return { agent, dispose: async () => {} }
+    },
+  },
+  sessions: { create: () => makeFakeAgent().session },
+}
+const wsStreams = []
+const wsSink = { stream: (_f, sid, content, finish) => wsStreams.push({ sid, content, finish }) }
+
+// 未开启 allowWorkspace → 明确拒绝（英文文案）
+const wsOff = new BridgeManager(wsCtx, { botLocale: 'en', maxChatAgents: 40, groupReply: true, autoStartWecom: true, autoStartTelegram: true, autoStartDiscord: true, allowWorkspace: false })
+await wsOff.handleExternalMessage({ key: 'telegram:555', frame: {}, sink: wsSink, chatType: 'single' }, '/workspace /tmp')
+check('未开启 allowWorkspace 时拒绝并英文提示', wsStreams.some((s) => s.content.includes('disabled')))
+
+// 无效路径 → 明确报错
+const wsOn = new BridgeManager(wsCtx, { botLocale: 'en', maxChatAgents: 40, groupReply: true, autoStartWecom: true, autoStartTelegram: true, autoStartDiscord: true, allowWorkspace: true })
+wsStreams.length = 0
+await wsOn.handleExternalMessage({ key: 'telegram:555', frame: {}, sink: wsSink, chatType: 'single' }, '/workspace /no/such/dir-xyz-123')
+check('无效目录报错', wsStreams.some((s) => s.content.includes('Invalid folder')))
+
+// 有效目录 → 注册 + 切换
+wsStreams.length = 0
+await wsOn.handleExternalMessage({ key: 'telegram:555', frame: {}, sink: wsSink, chatType: 'single' }, `/workspace ${wsDir}`)
+check('注册成功回复包含目录路径', wsStreams.some((s) => s.content.includes(wsRealDir)))
+check('workspaceRegistry.create 已调用（realpath 归一路径）', createdWs.includes(wsRealDir))
+check('注册前不创建会话', wsSessions.length === 0)
+
+// 下一条消息：会话以该目录为 cwd 创建，并挂载到工作区
+wsStreams.length = 0
+await wsOn.handleExternalMessage({ key: 'telegram:555', frame: {}, sink: wsSink, chatType: 'single' }, 'hello ws')
+await new Promise((r) => setTimeout(r, 700))
+const wsSession = wsSessions.find((x) => x.meta?.cwd === wsRealDir)
+check('新会话 cwd 为工作区目录', wsSession !== undefined)
+check('会话已挂载到工作区（attachSession）', wsSession !== undefined && attachedSessions.includes(wsSession.sessionId))
+check('会话 meta 不带 origin=subagent（Web GUI 会话树可见）', wsSession !== undefined && wsSession.meta?.origin === undefined)
+check('用户消息 source.kind=user（触发 Web UI 同款会话命名）', wsMessages.length > 0 && wsMessages.every((m) => m.source?.kind === 'user'), JSON.stringify(wsMessages[0]?.source))
+
+// 中文别名 + 中文文案路径
+const wsZh = new BridgeManager(wsCtx, { botLocale: 'zh', maxChatAgents: 40, groupReply: true, autoStartWecom: true, autoStartTelegram: true, autoStartDiscord: true, allowWorkspace: true })
+wsStreams.length = 0
+await wsZh.handleExternalMessage({ key: 'telegram:666', frame: {}, sink: wsSink, chatType: 'single' }, `工作区 ${wsDir}`)
+check('中文别名「工作区 <目录>」生效', wsStreams.some((s) => s.content.includes('已把')))
+
+// ---------- 3.6 Web 能力透传：指令 / @文件浏览 / 模型与思考力度 ----------
+console.log('\n[3.6] 指令 / @文件浏览 / 模型与思考力度')
+const executedCommands = []
+const cmdMessages = []
+const cmdSessions = []
+const cmdCtx = {
+  get: (name) => {
+    if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test-model' }) }
+    if (name === 'commands') return {
+      list: (agent) => [{ name: 'plan', description: 'Plan a task' }, { name: 'goal', description: 'Track a goal' }],
+      execute: async (agent, line) => {
+        executedCommands.push(line)
+        if (line.startsWith('/plan')) return { result: { kind: 'success', text: `PLAN OUTPUT: ${line.slice('/plan'.length).trim()}` } }
+        if (line.startsWith('/boom')) return { result: { kind: 'error', text: 'boom failed' } }
+        return undefined
+      },
+    }
+    if (name === 'fileReferences') return {
+      list: async (agent, query) => query.includes('src')
+        ? [{ path: 'src/index.ts', kind: 'file' }, { path: 'src/host', kind: 'directory' }]
+        : [],
+    }
+    if (name === 'llm') return {
+      listProviders: () => [{ id: 'opencode-go' }],
+      listModels: async (provider) => provider === 'opencode-go' ? [{ id: 'deepseek-v4-flash' }, { id: 'deepseek-v4-pro' }] : [],
+      resolveModelInfo: async (provider, model) => model === 'deepseek-v4-pro'
+        ? { reasoning: { efforts: [{ id: 'max', name: 'Max' }, { id: 'low', name: 'Low' }], defaultEffort: 'low' } }
+        : {},
+    }
+    return undefined
+  },
+  agents: {
+    roots: () => [{ options: { model: 'test' } }],
+    list: () => [],
+    create: async ({ sessionId, meta, agentOptions }) => {
+      const { agent } = makeFakeAgent()
+      agent.session.id = sessionId
+      const send = agent.send.bind(agent)
+      agent.send = (message) => { cmdMessages.push(message); return send(message) }
+      cmdSessions.push({ sessionId, meta, agentOptions })
+      return { agent, dispose: async () => {} }
+    },
+  },
+  sessions: { create: () => makeFakeAgent().session },
+}
+const cmdConfig = { botLocale: 'en', maxChatAgents: 40, groupReply: true, autoStartWecom: true, autoStartTelegram: true, autoStartDiscord: true, allowWorkspace: true }
+const cmdManager = new BridgeManager(cmdCtx, cmdConfig)
+const cmdStreams = []
+const cmdSink = { stream: (_f, sid, content, finish) => cmdStreams.push({ sid, content, finish }) }
+
+// /commands 列出指令描述符
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '/commands')
+check('/commands 列出指令（含 /plan）', cmdStreams.some((s) => s.content.includes('/plan') && s.content.includes('Plan a task')))
+
+// /plan 透传执行：输出文本作为用户消息进入会话，原始命令行不进模型
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '/plan fix the gateway')
+await new Promise((r) => setTimeout(r, 700))
+check('指令已执行（execute 调用）', executedCommands.includes('/plan fix the gateway'))
+check('指令输出成为用户消息（原文不发送）', cmdMessages.some((m) => m.content.some((b) => b.type === 'text' && b.text === 'PLAN OUTPUT: fix the gateway')) && !cmdMessages.some((m) => m.content.some((b) => b.type === 'text' && b.text.includes('/plan'))))
+
+// /boom 错误 → 直接回复错误文本
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '/boom')
+check('指令错误回复给聊天', cmdStreams.some((s) => s.content.includes('boom failed')))
+
+// /nope 未知指令 → 原样进模型
+const msgCountBefore = cmdMessages.length
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '/nope whatever')
+await new Promise((r) => setTimeout(r, 700))
+check('未知指令原样交给模型', cmdMessages.length === msgCountBefore + 1 && cmdMessages.at(-1).content.some((b) => b.type === 'text' && b.text === '/nope whatever'))
+
+// /files 与 @ 浏览
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '/files src')
+check('/files 列出匹配文件与文件夹', cmdStreams.some((s) => s.content.includes('src/index.ts') && s.content.includes('src/host/')))
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '@src/')
+check('@查询 浏览回列表', cmdStreams.some((s) => s.content.includes('src/index.ts')))
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, '@nope/')
+check('@查询 无匹配提示', cmdStreams.some((s) => s.content.includes('No matching')))
+// 含正文的 @ 消息不拦截（原样进模型）
+await cmdManager.handleExternalMessage({ key: 'telegram:777', frame: {}, sink: cmdSink, chatType: 'single' }, 'please fix @src/index.ts')
+await new Promise((r) => setTimeout(r, 700))
+check('带正文的 @ 消息原样进模型', cmdMessages.at(-1).content.some((b) => b.type === 'text' && b.text === 'please fix @src/index.ts'))
+
+// /model 列表 + 切换 + 校验
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/model')
+check('/model 列出可用模型', cmdStreams.some((s) => s.content.includes('opencode-go') && s.content.includes('deepseek-v4-pro')))
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/model nope x')
+check('未知供应商报错', cmdStreams.some((s) => s.content.includes('Provider "nope" not found')))
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/model opencode-go deepseek-v4-pro max')
+check('模型切换确认（含 effort）', cmdStreams.some((s) => s.content.includes('opencode-go / deepseek-v4-pro') && s.content.includes('effort max')))
+// 下一条消息：会话以所选模型创建
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, 'hello model')
+await new Promise((r) => setTimeout(r, 700))
+check('新会话使用所选模型', cmdSessions.some((x) => x.agentOptions?.provider === 'opencode-go' && x.agentOptions?.model === 'deepseek-v4-pro'))
+// 无效 effort 报错
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/model opencode-go deepseek-v4-pro bogus')
+check('不支持的努力力度报错', cmdStreams.some((s) => s.content.includes('does not support effort "bogus"')))
+// /effort 切换与校验
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/effort low')
+check('/effort 切换确认', cmdStreams.some((s) => s.content.includes('effort set to "low"')))
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/effort bogus')
+check('/effort 无效报错', cmdStreams.some((s) => s.content.includes('does not support effort "bogus"')))
+// /effort 不带参数 → 列出当前模型力度（含默认标记）
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/effort')
+check('/effort 列出力度（含默认标记）', cmdStreams.some((s) => s.content.includes('Reasoning efforts') && s.content.includes('max') && s.content.includes('low') && s.content.includes('(default)')))
+// /model <p> <m> 不带 effort → 确认回复附带力度列表
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/model opencode-go deepseek-v4-pro')
+check('/model 不带 effort 时附带力度列表', cmdStreams.some((s) => s.content.includes('opencode-go / deepseek-v4-pro') && s.content.includes('- `max` → Max')))
+// /model reset 恢复默认
+cmdStreams.length = 0
+await cmdManager.handleExternalMessage({ key: 'telegram:888', frame: {}, sink: cmdSink, chatType: 'single' }, '/model reset')
+check('/model reset 确认', cmdStreams.some((s) => s.content.includes('reset to default')))
 
 // ---------- 4. groupReply=false 时忽略群聊 ----------
 console.log('\n[4] groupReply 配置')
@@ -203,6 +411,8 @@ const db = new DiscordBridge('FAKE_DISCORD_TOKEN', {
   },
 })
 db.start()
+// 桥在异步微任务里创建 WS（代理探测），等待其落盘后再取实例。
+await new Promise((r) => setTimeout(r, 60))
 const ws = MockWebSocket.instances[0]
 // 网关握手：HELLO → IDENTIFY → READY
 ws.emit({ op: 10, d: { heartbeat_interval: 30000 } })
@@ -616,7 +826,148 @@ const { TelegramBridge: TBTest, DiscordBridge: DBTest } = await import('../lib/i
   // (5) QQ: 返回 2025-04-21 协议已下线说明
   const qqRes = await bm.pushImage('qq', 'openid', Buffer.from('raw-bytes'))
   check('QQ 返回主动推送已停用说明', qqRes.ok === false && qqRes.detail.includes('2025-04-21'))
+
+  // (6) Buzz: 平台级停用后主动推送被明确拒绝（enabled=false 时读存储，不依赖桥状态）
+  const buzzPushRes = await bm.pushImage('buzz', 'ch-1', Buffer.from('raw-bytes'))
+  check('Buzz 图片推送返回协议不支持说明', buzzPushRes.ok === false && buzzPushRes.detail.includes('暂不支持图片推送'))
 }
+
+// ---------- 12. Buzz 桥（mock Nostr relay：NIP-42 + 频道订阅 + 流式编辑） ----------
+console.log('\n[12] Buzz 桥（NIP-42 AUTH / #h 频道订阅 / kind-40003 流式编辑）')
+import { BuzzBridge, testPlatform } from '../lib/index.js'
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
+import { nsecEncode } from 'nostr-tools/nip19'
+
+MockWebSocket.instances.length = 0
+const agentSk = generateSecretKey()
+const agentPub = getPublicKey(agentSk)
+const peerSk = generateSecretKey()
+const peerPub = getPublicKey(peerSk)
+const relaySk = generateSecretKey()
+const signEvent = (sk, kind, tags, content) =>
+  finalizeEvent({ kind, created_at: Math.floor(Date.now() / 1000), tags, content }, sk)
+
+let buzzReceived = []
+const bb = new BuzzBridge({ nsec: nsecEncode(agentSk), relay: 'ws://mock.buzz/relay' }, {
+  onStatus: () => {},
+  onText: (text, identity) => {
+    buzzReceived.push({ text, identity })
+    const huge = '长'.repeat(40000)
+    identity.sink.stream(identity.frame, 'b1', 'Buzz 回复', false)
+    identity.sink.stream(identity.frame, 'b1', huge, true)
+  },
+})
+bb.start()
+await new Promise((r) => setTimeout(r, 50))
+const bws = MockWebSocket.instances[0]
+check('已连接 mock relay', bws !== undefined && bws.url === 'ws://mock.buzz/relay')
+bws.onopen?.()
+await new Promise((r) => setTimeout(r, 30))
+check('发出频道发现订阅（kinds:39000）', bws.sent.some((f) => f[0] === 'REQ' && f[1] === 'buzz-discovery' && f[2].kinds?.includes(39000)))
+check(
+  '发出成员订阅（kinds:44100/44101 + #p 本机）',
+  bws.sent.some((f) => f[0] === 'REQ' && f[1] === 'buzz-membership' && f[2]['#p']?.[0] === agentPub),
+)
+// 认证前 CLOSED auth-required：正常引导流程，AUTH 成功后统一重开
+bws.emit(['CLOSED', 'buzz-discovery', 'auth-required: unknown identity'])
+bws.emit(['CLOSED', 'buzz-membership', 'auth-required: unknown identity'])
+bws.emit(['AUTH', 'challenge-abc'])
+check('回应合法 kind-22242 AUTH 事件', (() => {
+  const frame = bws.sent.find((f) => f[0] === 'AUTH')
+  if (!frame) return false
+  const ev = frame[1]
+  return ev.kind === 22242 && verifyEvent(ev) &&
+    ev.tags.some((t) => t[0] === 'challenge' && t[1] === 'challenge-abc')
+})())
+const authEv = bws.sent.find((f) => f[0] === 'AUTH')[1]
+bws.emit(['OK', authEv.id, true, ''])
+await new Promise((r) => setTimeout(r, 30))
+check('AUTH 成功后重开被 CLOSED 的订阅', bws.sent.filter((f) => f[0] === 'REQ' && f[1] === 'buzz-discovery').length >= 2)
+// 频道发现：39000 元数据（d=频道id, t=类型）
+bws.emit(['EVENT', 'buzz-discovery', signEvent(relaySk, 39000, [['d', 'ch-1'], ['t', 'stream'], ['name', 'main']], '{}')])
+await new Promise((r) => setTimeout(r, 30))
+check(
+  '为发现的频道打开 #h 聊天订阅',
+  bws.sent.some((f) => f[0] === 'REQ' && f[1] === 'buzz-chat-ch-1' && f[2].kinds?.includes(9) && f[2]['#h']?.[0] === 'ch-1'),
+)
+// 成员加入事件 → 新频道订阅
+bws.emit(['EVENT', 'buzz-membership', signEvent(relaySk, 44100, [['p', agentPub], ['h', 'ch-new']], '')])
+await new Promise((r) => setTimeout(r, 30))
+check('成员加入事件触发新频道订阅', bws.sent.some((f) => f[0] === 'REQ' && f[1] === 'buzz-chat-ch-new'))
+// DM 频道元数据 + 无提及消息也应响应
+bws.emit(['EVENT', 'buzz-discovery', signEvent(relaySk, 39000, [['d', 'ch-dm'], ['t', 'dm'], ['name', 'dm-room']], '{}')])
+await new Promise((r) => setTimeout(r, 30))
+check('DM 频道打开订阅', bws.sent.some((f) => f[0] === 'REQ' && f[1] === 'buzz-chat-ch-dm'))
+// @提及消息 → onText（提及前缀剥离）
+bws.emit(['EVENT', 'buzz-chat-ch-1', signEvent(peerSk, 9, [['h', 'ch-1'], ['p', agentPub]], '@DSH 你好')])
+await new Promise((r) => setTimeout(r, 30))
+check('收到 @提及 消息（key=buzz:ch-1）', buzzReceived.some((x) => x.identity.key === 'buzz:ch-1'))
+check('提及前缀被剥离', buzzReceived.some((x) => x.text === '你好'))
+check('群聊类型为 group', buzzReceived.some((x) => x.identity.chatType === 'group'))
+const before = buzzReceived.length
+bws.emit(['EVENT', 'buzz-chat-ch-1', signEvent(peerSk, 9, [['h', 'ch-1']], '无提及应忽略')])
+bws.emit(['EVENT', 'buzz-chat-ch-1', signEvent(agentSk, 9, [['h', 'ch-1']], '自己发的应忽略')])
+const forged = signEvent(peerSk, 9, [['h', 'ch-1'], ['p', agentPub]], '@DSH 伪造')
+forged.content = '内容被篡改'
+bws.emit(['EVENT', 'buzz-chat-ch-1', forged])
+await new Promise((r) => setTimeout(r, 30))
+check('无提及/自消息/篡改签名均被忽略', buzzReceived.length === before)
+// DM 频道：无 p 标签也响应，且 chatType=single
+bws.emit(['EVENT', 'buzz-chat-ch-dm', signEvent(peerSk, 9, [['h', 'ch-dm']], '私信你好')])
+await new Promise((r) => setTimeout(r, 30))
+check('DM 频道免提及响应', buzzReceived.some((x) => x.identity.key === 'buzz:ch-dm' && x.text === '私信你好'))
+check('DM 频道 chatType=single', buzzReceived.some((x) => x.identity.key === 'buzz:ch-dm' && x.identity.chatType === 'single'))
+// 回复流：先发 kind-9 占位（含 #h 与 p 提及），限频后 kind-40003 就地编辑 + 超长分块
+const chatFrame = bws.sent.find((f) => f[0] === 'EVENT' && f[1].kind === 9 && f[1].tags.some((t) => t[0] === 'h' && t[1] === 'ch-1'))
+check('回复先发 kind-9 占位', chatFrame !== undefined)
+check('占位携带 #h 频道标签', chatFrame?.[1].tags.some((t) => t[0] === 'h' && t[1] === 'ch-1'))
+check('占位携带 p 提及原发件人', chatFrame?.[1].tags.some((t) => t[0] === 'p' && t[1] === peerPub))
+await new Promise((r) => setTimeout(r, 1400))
+const editFrame = bws.sent.find((f) => f[0] === 'EVENT' && f[1].kind === 40003)
+check('后续推送为 kind-40003 编辑', editFrame !== undefined)
+check('编辑指向占位事件 id', editFrame?.[1].tags.some((t) => t[0] === 'e' && t[1] === chatFrame[1].id))
+check('编辑内容 ≤ 60000 字节（relay 64KB 上限留边距）', Buffer.byteLength(editFrame?.[1].content ?? '', 'utf8') <= 60000)
+const tailFrames = bws.sent.filter((f) => f[0] === 'EVENT' && f[1].kind === 9 && f[1].tags.some((t) => t[0] === 'h' && t[1] === 'ch-1'))
+check('超长回复溢出块以追加 kind-9 发出（分块不丢内容）', tailFrames.length >= 2 && tailFrames[tailFrames.length - 1][1].content.length >= 19000)
+// 线程跟随：他人回复本机事件（e 根为本机占位）→ 响应
+await new Promise((r) => setTimeout(r, 50))
+const beforeThread = buzzReceived.length
+bws.emit(['EVENT', 'buzz-chat-ch-1', signEvent(peerSk, 9, [['h', 'ch-1'], ['e', chatFrame[1].id]], '追问一下')])
+await new Promise((r) => setTimeout(r, 30))
+check('本机线程中的回复免提及响应（线程跟随）', buzzReceived.length === beforeThread + 1)
+bb.stop()
+
+// ---------- 12.1 testPlatform：NIP-42 握手测试 ----------
+console.log('  连接测试')
+MockWebSocket.instances.length = 0
+const tPromise = testPlatform('buzz', { nsec: nsecEncode(agentSk), relay: 'ws://mock.buzz/relay' })
+await new Promise((r) => setTimeout(r, 30))
+const tws = MockWebSocket.instances[0]
+check('测试通道已建立 WS', tws !== undefined)
+tws.onopen?.()
+tws.emit(['AUTH', 'challenge-t'])
+await new Promise((r) => setTimeout(r, 30))
+const authFrame2 = tws.sent.find((f) => f[0] === 'AUTH')
+check('测试通道回应 AUTH', authFrame2 !== undefined && verifyEvent(authFrame2[1]))
+tws.emit(['OK', authFrame2[1].id, true, ''])
+const tResult = await tPromise
+check('testPlatform 认证成功（含 npub）', tResult.ok === true && tResult.detail.includes('认证成功'))
+const badNsec = await testPlatform('buzz', { nsec: 'not-a-key', relay: 'ws://mock.buzz/relay' })
+check('非法 nsec 测试失败并给明原因', badNsec.ok === false && badNsec.detail.includes('nsec'))
+const badNsecEn = await testPlatform('buzz', { nsec: 'not-a-key', relay: 'ws://mock.buzz/relay' }, 'en')
+check('英文 UI 下测试文案为英文', badNsecEn.ok === false && badNsecEn.detail.startsWith('Invalid nsec'))
+const badNsecEs = await testPlatform('buzz', { nsec: 'not-a-key', relay: 'ws://mock.buzz/relay' }, 'es')
+check('西语 UI 下测试文案为西语', badNsecEs.ok === false && badNsecEs.detail.startsWith('nsec no válida'))
+
+// ---------- 12.2 nostr-tools 加密原语往返 ----------
+console.log('  加密原语')
+const roundtrip = finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'hello' }, agentSk)
+check('finalizeEvent/verifyEvent 往返', verifyEvent(roundtrip))
+check('getPublicKey 一致性', getPublicKey(agentSk) === agentPub)
+
+// ---------- 12.3 配置默认值：机器人回复文案默认英文 ----------
+const { Config } = await import('../lib/index.js')
+check('botLocale 默认 English（机器人 ack/help 等文案）', Config({}).botLocale === 'en')
 
 eb.stop()
 imapConnections.forEach((s) => s.destroy())

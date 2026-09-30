@@ -1,5 +1,7 @@
 node_modules/
 lib/
+.npm-cache/
+.dsh-vision-toolkit/
 *.log
 *.tgz
 .DS_Store

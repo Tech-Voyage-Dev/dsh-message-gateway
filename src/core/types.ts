@@ -3,7 +3,7 @@
 /** 支持的平台标识。 */
 export type PlatformId =
   | 'telegram' | 'discord' | 'qq' | 'wecom' | 'wecom-aibot' | 'wechat' | 'wechat-mp' | 'whatsapp' | 'email' | 'webhooks'
-  | 'dingtalk' | 'feishu' | 'bark' | 'serverchan'
+  | 'dingtalk' | 'feishu' | 'bark' | 'serverchan' | 'buzz'
 
 /** 平台凭据字段。 */
 export interface PlatformField {
@@ -28,7 +28,7 @@ export interface PlatformDef {
 }
 
 /** 平台连接状态。 */
-export type PlatformState = 'none' | 'connecting' | 'connected' | 'error' | 'manual'
+export type PlatformState = 'none' | 'connecting' | 'connected' | 'error' | 'manual' | 'disabled'
 
 /** 平台状态视图（不含凭据明文）。 */
 export interface PlatformStatus {
@@ -39,6 +39,8 @@ export interface PlatformStatus {
   /** 测试返回信息（机器人用户名 / 错误消息）。 */
   detail: string
   testedAt: number | null
+  /** 平台启用开关（false = 已停用：桥停止、回调/推送拒绝；凭据仍保留）。 */
+  enabled: boolean
 }
 
 /** 网关完整视图。 */

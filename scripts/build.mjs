@@ -56,6 +56,7 @@ await Promise.all([
       'dingtalk-stream',
       'undici',
       'qrcode',
+      'nostr-tools',
     ],
     sourcemap: true,
     logLevel: 'warning',

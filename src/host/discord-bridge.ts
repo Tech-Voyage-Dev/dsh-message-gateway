@@ -243,7 +243,7 @@ export class DiscordBridge {
   private async downloadAttachment(att: Record<string, unknown>): Promise<Uint8Array | null> {
     const url = typeof att.url === 'string' ? att.url : ''
     if (url === '') return null
-    const userAgent = 'DiscordBot (https://github.com/a792883583/dsh-message-gateway, 1.0.0)'
+    const userAgent = 'DiscordBot (https://github.com/Tech-Voyage-Dev/dsh-message-gateway, 1.0.0)'
     try {
       let response = await smartFetchBinary(url, { headers: { 'User-Agent': userAgent }, signal: AbortSignal.timeout(60_000) })
       if (response.status === 401 || response.status === 403) {

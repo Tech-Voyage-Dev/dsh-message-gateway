@@ -7,7 +7,7 @@
 import { createElement, useCallback, useEffect, useState } from 'react'
 import type { GatewayView, PlatformDef, PlatformStatus } from '../core/types.ts'
 import type { GatewayApi } from './api.ts'
-import { useT } from './i18n.ts'
+import { currentLang, useT } from './i18n.ts'
 import { InboxIcon, PlatformIcon } from './icons.tsx'
 
 const STYLE = `
@@ -47,6 +47,7 @@ const STYLE = `
 .dsh-gw-item .dot.error { background:var(--gw-err); }
 .dsh-gw-item .dot.none { background:#8b949e; }
 .dsh-gw-item .dot.manual { background:var(--gw-warn); }
+.dsh-gw-item .dot.disabled { background:var(--gw-muted); opacity:0.45; }
 .dsh-gw-item .st { font-size:10px; color:var(--gw-muted); flex:none; width:56px;
   text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dsh-gw-detail { flex:1; min-width:0; overflow-y:auto; padding:18px 22px; }
@@ -59,6 +60,7 @@ const STYLE = `
 .dsh-gw-status.error { background:rgba(207,34,46,0.12); color:var(--gw-err); }
 .dsh-gw-status.none { background:var(--gw-panel); color:var(--gw-muted); }
 .dsh-gw-status.manual { background:rgba(154,103,0,0.12); color:var(--gw-warn); }
+.dsh-gw-status.disabled { background:var(--gw-panel); color:var(--gw-muted); }
 .dsh-gw-field { margin-bottom:12px; }
 .dsh-gw-field label { display:block; font-size:12px; color:var(--gw-muted); margin-bottom:4px; }
 .dsh-gw-input { width:100%; padding:8px 10px; font-size:13px; color:var(--gw-fg);
@@ -102,6 +104,8 @@ export function GatewayPage(props: { api: GatewayApi; onClose: () => void }): Re
   const [wechatQr, setWechatQr] = useState<{ qrcode: string; qrcodeUrl: string } | null>(null)
   const [wechatQrLoading, setWechatQrLoading] = useState(false)
   const [wechatScanStatus, setWechatScanStatus] = useState<string | null>(null)
+  const [buzzGenBusy, setBuzzGenBusy] = useState(false)
+  const [buzzGenResult, setBuzzGenResult] = useState<{ nsec: string; npub: string } | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     const result = await api.list()
@@ -143,6 +147,7 @@ export function GatewayPage(props: { api: GatewayApi; onClose: () => void }): Re
     setTestResult(null)
     setWechatQr(null)
     setWechatScanStatus(null)
+    setBuzzGenResult(null)
   }
 
   const getWechatQrCode = async (): Promise<void> => {
@@ -198,7 +203,7 @@ export function GatewayPage(props: { api: GatewayApi; onClose: () => void }): Re
     setBusy(true)
     setMessage(null)
     setTestResult(null)
-    const result = await api.save(selected, form)
+    const result = await api.save(selected, form, currentLang())
     setBusy(false)
     if (result.ok) {
       setView(result.value)
@@ -222,12 +227,41 @@ export function GatewayPage(props: { api: GatewayApi; onClose: () => void }): Re
     }
   }
 
+  /** 平台启用/停用开关：停用停止常驻桥，凭据保留。 */
+  const toggleEnabled = async (): Promise<void> => {
+    const current = statusOf(selected)?.enabled
+    setBusy(true)
+    setMessage(null)
+    const result = await api.enable(selected, current === false, currentLang())
+    setBusy(false)
+    if (result.ok) {
+      setView(result.value)
+      setMessage({ text: t(current === false ? 'gateway.enabled' : 'gateway.disabled'), kind: 'ok' })
+    } else {
+      setMessage({ text: result.error.message, kind: 'err' })
+    }
+  }
+
+  /** 生成一次性 Buzz 密钥对：填入私钥框并展示 npub（供 relay 管理员注册）。 */
+  const generateBuzz = async (): Promise<void> => {
+    setBuzzGenBusy(true)
+    setMessage(null)
+    const res = await api.generateBuzzKey()
+    setBuzzGenBusy(false)
+    if (res.ok) {
+      setBuzzGenResult(res.value)
+      setForm((prev) => ({ ...prev, nsec: res.value.nsec }))
+    } else {
+      setMessage({ text: res.error.message, kind: 'err' })
+    }
+  }
+
   const runTest = async (): Promise<void> => {
     setTesting(true)
     setTestResult(null)
     // 直接用当前表单值测试（只测不存）；保存才是持久化。
     const def = defOf(selected)
-    const result = await api.test(selected, def !== undefined && def.fields.length > 0 ? form : undefined)
+    const result = await api.test(selected, def !== undefined && def.fields.length > 0 ? form : undefined, currentLang())
     setTesting(false)
     if (result.ok) {
       setTestResult(result.value)
@@ -353,6 +387,31 @@ export function GatewayPage(props: { api: GatewayApi; onClose: () => void }): Re
                   </div>
                 ) : null}
 
+                {selectedDef.id === 'buzz' ? (
+                  <div style={{ marginBottom: 18 }}>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+                      <button
+                        type="button"
+                        className="dsh-gw-btn"
+                        disabled={busy || buzzGenBusy}
+                        onClick={() => void generateBuzz()}
+                      >
+                        {buzzGenBusy ? '…' : t('gateway.buzz.generate')}
+                      </button>
+                      {buzzGenResult !== null ? (
+                        <span style={{ fontSize: 12, color: 'var(--gw-accent)', fontWeight: 500 }}>
+                          {t('gateway.buzz.generated')}
+                        </span>
+                      ) : null}
+                    </div>
+                    {buzzGenResult !== null ? (
+                      <div style={{ fontSize: 12, color: 'var(--gw-muted)', wordBreak: 'break-all' }}>
+                        npub: {buzzGenResult.npub}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 {selectedDef.fields.map((field) => (
                   <div key={field.key} className="dsh-gw-field">
                     <label>{t(field.labelKey)}</label>
@@ -392,6 +451,12 @@ export function GatewayPage(props: { api: GatewayApi; onClose: () => void }): Re
                       ) : null}
                     </>
                   )}
+                  {selectedStatus?.configured === true ? (
+                    <button type="button" className="dsh-gw-btn" disabled={busy}
+                      onClick={() => void toggleEnabled()}>
+                      {selectedStatus.enabled === false ? t('gateway.enable') : t('gateway.disable')}
+                    </button>
+                  ) : null}
                   {message !== null ? <span className={`dsh-gw-msg ${message.kind}`}>{message.text}</span> : null}
                 </div>
 
