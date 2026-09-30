@@ -1,6 +1,8 @@
-# dsh-message-gateway
+# @tech-voyage-dev/dsh-message-gateway
 
 [English](README.md) · [Español](README.es.md)
+
+> **分支说明** — 本仓库是 [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) 的派生版本（由 [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev) 维护），新增 **Buzz（Nostr）桥接**与海外平台智能代理支持。安装派生版本：`dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`。
 
 ![dsh-message-gateway 功能界面](assets/screenshot.png)
 
@@ -79,7 +81,7 @@ DSH Web GUI 的消息平台网关插件：在侧边栏「工作区」行、紧�
 
 ```sh
 # 从 npm 安装（通用插件，任何 DSH 用户可直接使用）
-dsh plugin --profile web add dsh-message-gateway
+dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway
 ```
 
 重启 `dsh web`，侧边栏「工作区」那一行、**搜索图标左侧**即出现「📮 消息平台」图标按钮。打开页面，选择平台、
