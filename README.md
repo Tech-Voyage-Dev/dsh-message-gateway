@@ -1,6 +1,10 @@
-# dsh-message-gateway
+# @tech-voyage-dev/dsh-message-gateway
 
 [中文](README.zh.md) · [Español](README.es.md)
+
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/Tech-Voyage-Dev/dsh-message-gateway)
+
+> **Fork notice** — this is a fork of [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) maintained by [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev), adding the **Buzz (Nostr) bridge** and overseas-platform smart proxy support. Install this fork with `dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`.
 
 ![dsh-message-gateway UI Preview](assets/screenshot.png)
 
@@ -77,7 +81,7 @@ A message-platform gateway plugin for the DSH Web GUI: a "Message platforms" ent
 
 ```sh
 # From npm (generic plugin, usable by any DSH user)
-dsh plugin --profile web add dsh-message-gateway
+dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway
 ```
 
 Restart `dsh web` — the "📮 Message platforms" icon button appears in the sidebar's "Workspaces" row, just left of the search icon. Open the page, pick a platform, fill in credentials and click **Save** — for the WeCom AI bot, saving `botId + secret` establishes the persistent bridge immediately and you can chat with the bot in WeCom right away (same as web: per-chat sessions + automatic context compression).

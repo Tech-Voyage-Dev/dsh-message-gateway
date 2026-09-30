@@ -1,6 +1,8 @@
-# dsh-message-gateway
+# @tech-voyage-dev/dsh-message-gateway
 
 [中文](README.zh.md) · [English](README.md)
+
+> **Aviso de fork** — este es un fork de [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) mantenido por [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev), que añade el **puente Buzz (Nostr)** y soporte de proxy inteligente para plataformas internacionales. Instala este fork con `dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`.
 
 ![Vista previa de dsh-message-gateway](assets/screenshot.png)
 
@@ -77,7 +79,7 @@ Un plugin de pasarela de mensajería para la GUI web de DSH: una entrada "Plataf
 
 ```sh
 # Desde npm (plugin genérico, utilizable por cualquier usuario de DSH)
-dsh plugin --profile web add dsh-message-gateway
+dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway
 ```
 
 Reinicie `dsh web`: el botón de icono "📮 Plataformas de mensajería" aparece en la fila "Espacios de trabajo" de la barra lateral, justo a la izquierda del icono de búsqueda. Abra la página, elija una plataforma, complete las credenciales y haga clic en **Guardar** — para el Bot de IA de WeCom, guardar `botId + secret` establece el puente persistente de inmediato y puede chatear con el bot en WeCom al momento (igual que en la web: sesiones por chat + compresión automática de contexto).
