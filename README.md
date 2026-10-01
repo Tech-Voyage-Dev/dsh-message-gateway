@@ -4,7 +4,7 @@
 
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/Tech-Voyage-Dev/dsh-message-gateway)
 
-> **Fork notice** — this is a fork of [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) maintained by [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev), adding the **Buzz (Nostr) bridge** and overseas-platform smart proxy support. Install this fork with `dsh plugin --profile web add @tech-voyage-dev/dsh-message-gateway`.
+> **Fork notice** — this is a fork of [a792883583/dsh-message-gateway](https://github.com/a792883583/dsh-message-gateway) maintained by [Tech-Voyage-Dev](https://github.com/Tech-Voyage-Dev), adding the **Buzz (Nostr) bridge** and overseas-platform smart proxy support. Install this fork with `dsh plugin --profile web add https://github.com/Tech-Voyage-Dev/dsh-message-gateway.git`.
 
 ![dsh-message-gateway UI Preview](assets/screenshot.png)
 
